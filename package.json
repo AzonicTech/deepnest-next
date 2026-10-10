@@ -16,6 +16,8 @@
     "start": "electron .",
     "printenv": "cross-replace node -e \"console.log(process.env)\"",
     "test": "playwright test",
+    "test:unit": "node --test tests/plateau.test.cjs tests/pair-dedupe.test.cjs",
+    "bench": "node scripts/bench-nest.js",
     "build": "tsc && electron-builder install-app-deps",
     "clean": "rmdir /s /q build dist >nul 2>&1|echo . >nul",
     "clean-all": "rmdir /s /q build dist node_modules bin >nul 2>&1|echo . >nul",

@@ -35,6 +35,9 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
   mergeLines: true, // whether to merge lines
   timeRatio: 0.5, // ratio of material reduction to laser time. 0 = optimize material only, 1 = optimize laser time only
   simplify: false,
+  stopOnPlateau: true,
+  plateauGenerations: 10,
+  plateauSeconds: 60,
   dxfImportScale: 1,
   dxfExportScale: 1,
   endpointTolerance: 0.36,
@@ -53,6 +56,7 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
 export const BOOLEAN_CONFIG_KEYS: ReadonlyArray<keyof UIConfig> = [
   "mergeLines",
   "simplify",
+  "stopOnPlateau",
   "useSvgPreProcessor",
   "useQuantityFromFileName",
   "exportWithSheetBoundboarders",
@@ -85,6 +89,9 @@ export class ConfigService implements ConfigObject {
   threads: number;
   populationSize: number;
   mutationRate: number;
+  stopOnPlateau: boolean;
+  plateauGenerations: number;
+  plateauSeconds: number;
   placementType: PlacementType;
   mergeLines: boolean;
   timeRatio: number;
@@ -120,6 +127,9 @@ export class ConfigService implements ConfigObject {
     this.threads = this.config.threads;
     this.populationSize = this.config.populationSize;
     this.mutationRate = this.config.mutationRate;
+    this.stopOnPlateau = this.config.stopOnPlateau;
+    this.plateauGenerations = this.config.plateauGenerations;
+    this.plateauSeconds = this.config.plateauSeconds;
     this.placementType = this.config.placementType;
     this.mergeLines = this.config.mergeLines;
     this.timeRatio = this.config.timeRatio;
@@ -204,6 +214,9 @@ export class ConfigService implements ConfigObject {
     this.threads = this.config.threads;
     this.populationSize = this.config.populationSize;
     this.mutationRate = this.config.mutationRate;
+    this.stopOnPlateau = this.config.stopOnPlateau;
+    this.plateauGenerations = this.config.plateauGenerations;
+    this.plateauSeconds = this.config.plateauSeconds;
     this.placementType = this.config.placementType;
     this.mergeLines = this.config.mergeLines;
     this.timeRatio = this.config.timeRatio;

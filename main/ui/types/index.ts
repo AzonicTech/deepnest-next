@@ -131,6 +131,10 @@ export interface DeepNestInstance {
   nests: SelectableNestingResult[];
   /** Whether nesting is currently running */
   working: boolean;
+  /** Generation / stall line shown beside the nest list */
+  nestStatus?: string;
+  /** True when a new placement should be drawn, not just the status line */
+  nestResultDirty?: boolean;
 
   /**
    * Import an SVG file
@@ -163,7 +167,8 @@ export interface DeepNestInstance {
    */
   start(
     progressCallback: ((progress: NestingProgress) => void) | null,
-    displayCallback: (() => void) | null
+    displayCallback: (() => void) | null,
+    doneCallback?: ((decision: { stop?: boolean; reason?: string | null }) => void) | null
   ): void;
 
   /**
@@ -194,6 +199,7 @@ export interface PartsViewData {
  */
 export interface NestViewData {
   nests: SelectableNestingResult[];
+  nestStatus: string;
   getSelected(): SelectableNestingResult[];
   getNestedPartSources(n: SelectableNestingResult): number[];
   getColorBySource(id: number): string;

@@ -31,6 +31,8 @@ jobs:
           file=node_modules/electron/dist/chrome-sandbox
           sudo chown root $file
           sudo chmod 4755 $file
+      - name: Run unit tests
+        run: npm run test:unit
       - name: Build
         run: npm run build
       - name: Install Playwright Browsers

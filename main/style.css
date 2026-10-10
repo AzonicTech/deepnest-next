@@ -1178,6 +1178,18 @@ body.dark-mode #parts table tbody tr td input[type="number"]:focus {
   margin-bottom: 0em;
 }
 
+#nestinfo .neststatus {
+  font-size: 0.75em;
+  line-height: 1.4;
+  color: #8a9099;
+  margin: 0.4em 0 0.8em 0;
+  max-width: 18em;
+}
+
+#nestinfo .neststatus.active {
+  color: #b5bcc9;
+}
+
 #nestlist {
   width: 100%;
   margin-top: 1em;

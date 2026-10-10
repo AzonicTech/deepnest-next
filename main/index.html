@@ -98,6 +98,7 @@
         	<div class="group"><h1>{{ getUtilisation() }}%</h1><span class="label">sheet utilisation</span></div>
         	<div class="group"><h1>{{ getTimeSaved() }}</h1><span class="label">laser time saved</span></div>
         	<div class="group"><h1>best nests so far</h1></div>
+        	<div class="group neststatus {{ nestStatus ? 'active' : '' }}">{{ nestStatus }}</div>
         	<div id="nestlist">
         		{{#each nests:i}}
         		<span class="nest {{ selected ? "active" : "" }}" on-click="selectnest:{{this}}">
@@ -450,6 +451,37 @@
                 min="1"
                 max="512"
                 data-config="mutationRate"
+                required
+              />
+            </dd>
+
+            <dt>Stop when plateaued</dt>
+            <dd>
+              <input type="checkbox" checked="checked" data-config="stopOnPlateau" />
+            </dd>
+
+            <dt>Stop after generations without improvement</dt>
+            <dd>
+              <input
+                type="number"
+                value="10"
+                step="1"
+                min="0"
+                max="1000"
+                data-config="plateauGenerations"
+                required
+              />
+            </dd>
+
+            <dt>Stop after seconds without improvement</dt>
+            <dd>
+              <input
+                type="number"
+                value="60"
+                step="1"
+                min="0"
+                max="3600"
+                data-config="plateauSeconds"
                 required
               />
             </dd>
@@ -3344,6 +3376,32 @@
           tried, but reduces the ability of the algorithm to build upon previous
           successes. Increase this value if there are obvious arrangements that
           it does not seem to explore.
+        </div>
+
+        <div class="config_explain" id="explain_stopOnPlateau">
+          <h1>Stop when plateaued</h1>
+          When this is on, nesting stops by itself once the best layout stops
+          getting better. Otherwise the search keeps running until you click
+          Stop, even after the placements have leveled off. Uncheck it to
+          search until you stop it by hand. After an automatic stop, Start nest
+          continues from the best result so far.
+        </div>
+
+        <div class="config_explain" id="explain_plateauGenerations">
+          <h1>Generations without improvement</h1>
+          Stop after this many genetic generations with no better nest. 10 is a
+          solid default for shop work. Set to 0 to ignore the generation count
+          and only use the time limit. If both limits are 0, nesting runs until
+          you click Stop.
+        </div>
+
+        <div class="config_explain" id="explain_plateauSeconds">
+          <h1>Seconds without improvement</h1>
+          Stop if the best fitness does not improve for this many seconds. The
+          clock starts after the first full generation finishes, so a slow
+          first pass is not cut off. 60 seconds is a reasonable backstop when
+          generations are slow. Set to 0 to ignore elapsed time and only use
+          the generation limit.
         </div>
       </div>
 

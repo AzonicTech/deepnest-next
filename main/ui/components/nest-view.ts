@@ -76,6 +76,7 @@ interface RactiveOptions {
  */
 interface NestViewData {
   nests: SelectableNestingResult[];
+  nestStatus: string;
   getSelected: () => SelectableNestingResult[];
   getNestedPartSources: (n: SelectableNestingResult) => number[];
   getColorBySource: (id: number) => string;
@@ -365,6 +366,7 @@ export class NestViewService {
       template: SELECTORS.NEST_TEMPLATE,
       data: {
         nests: deepNest.nests,
+        nestStatus: deepNest.nestStatus || "",
         getSelected: function (this: {
           get: (key: string) => SelectableNestingResult[];
         }): SelectableNestingResult[] {

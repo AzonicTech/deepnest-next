@@ -381,9 +381,23 @@ export class NestingService {
    * This callback is called when a new nesting result is available
    * @returns Display callback function bound to this service
    */
+  private syncNestStatus(): void {
+    if (!this.nestRactive || !this.deepNest) {
+      return;
+    }
+    this.nestRactive.set("nestStatus", this.deepNest.nestStatus || "");
+  }
+
   private createDisplayCallback(): DisplayCallback {
     return () => {
+      this.syncNestStatus();
       if (!this.deepNest || !this.nestRactive) {
+        return;
+      }
+
+      const dirty = !!this.deepNest.nestResultDirty;
+      this.deepNest.nestResultDirty = false;
+      if (!dirty) {
         return;
       }
 
@@ -458,13 +472,34 @@ export class NestingService {
       // Create the display callback
       const displayCallback = this.createDisplayCallback();
 
-      // Start the nesting process
-      this.deepNest.start(progressCallback || null, displayCallback);
+      // Start the nesting process. The third callback fires on auto-stop.
+      this.deepNest.start(progressCallback || null, displayCallback, () => {
+        this.handleAutoStop();
+      });
 
       return true;
     } finally {
       this.isStarting = false;
     }
+  }
+
+  /**
+   * Apply the stopped-button state and tell the operator why the search ended.
+   * Does not clear the best nest. Start nest resumes from it.
+   */
+  private handleAutoStop(): void {
+    this.syncNestStatus();
+    this.clearProgressIndicators();
+    this.updateStopButton("stop-disabled");
+
+    const text =
+      this.deepNest?.nestStatus ||
+      "Nesting stopped: search plateaued. Best layout is ready to export.";
+    message(text);
+
+    setTimeout(() => {
+      this.updateStopButton("start");
+    }, 3000);
   }
 
   /**
@@ -574,6 +609,7 @@ export class NestingService {
 
       // Update the nest view
       if (this.nestRactive) {
+        this.nestRactive.set("nestStatus", "");
         this.nestRactive.update("nests");
       }
 

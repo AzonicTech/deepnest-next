@@ -237,44 +237,139 @@ async function runNotificationCheck() {
 }
 
 
-let winCount = 0;
+// One hidden window per GA individual. The old hard cap of 1 made the
+// "threads" / CPU-cores setting a no-op. 4 matches the default config;
+// background-set-threads resizes the pool (1..8) when a nest starts.
+var workerPoolSize = 4;
+var pendingWork = [];
+
+function createBackgroundWindow() {
+  var back = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      contextIsolation: false,
+      enableRemoteModule: true,
+      nodeIntegration: true,
+      nativeWindowOpen: true,
+      // Hidden renderers are backgrounded. Leave timers and NFP workers
+      // unthrottled or the extra windows will sit idle.
+      backgroundThrottling: false,
+    },
+  });
+
+  remote.enable(back.webContents);
+  back.isBusy = false;
+  back.isReady = false;
+
+  if (process.env["deepnest_debug"] === "1") back.webContents.openDevTools();
+
+  back.loadURL(
+    url.format({
+      pathname: path.join(__dirname, "./main/background.html"),
+      protocol: "file:",
+      slashes: true,
+    })
+  );
+
+  back.webContents.on("render-process-gone", (event, details) => {
+    console.error("Render process gone:", event, details);
+  });
+  back.on("render-process-gone", (event) => {
+    console.error("Render process gone:", event);
+  });
+  back.on("closed", function () {
+    var idx = backgroundWindows.indexOf(back);
+    if (idx >= 0) {
+      backgroundWindows[idx] = null;
+    }
+  });
+
+  backgroundWindows.push(back);
+  return back;
+}
+
+function liveBackgroundWindows() {
+  var live = [];
+  for (var i = 0; i < backgroundWindows.length; i++) {
+    if (backgroundWindows[i]) {
+      live.push(backgroundWindows[i]);
+    }
+  }
+  return live;
+}
+
+function ensureBackgroundWindows(count) {
+  var n = parseInt(count, 10);
+  if (!n || n < 1) {
+    n = 1;
+  }
+  if (n > 8) {
+    n = 8;
+  }
+  workerPoolSize = n;
+
+  var live = liveBackgroundWindows();
+  while (live.length < workerPoolSize) {
+    live.push(createBackgroundWindow());
+  }
+
+  // Shrink idle windows only. A busy one finishes its individual first.
+  while (live.length > workerPoolSize) {
+    var extra = live[live.length - 1];
+    if (extra.isBusy) {
+      break;
+    }
+    var idx = backgroundWindows.indexOf(extra);
+    if (idx >= 0) {
+      backgroundWindows[idx] = null;
+    }
+    extra.destroy();
+    live.pop();
+  }
+}
+
+function getFreeBackgroundWindow() {
+  var live = liveBackgroundWindows();
+  for (var i = 0; i < live.length; i++) {
+    if (live[i].isReady && !live[i].isBusy) {
+      return live[i];
+    }
+  }
+  return null;
+}
+
+function dispatchWork(payload) {
+  var win = getFreeBackgroundWindow();
+  if (!win) {
+    return false;
+  }
+  win.isBusy = true;
+  win.webContents.send("background-start", payload);
+  return true;
+}
+
+function flushPendingWork() {
+  while (pendingWork.length > 0) {
+    if (!dispatchWork(pendingWork[0])) {
+      break;
+    }
+    pendingWork.shift();
+  }
+}
+
+function destroyBackgroundWindows() {
+  pendingWork = [];
+  for (var i = 0; i < backgroundWindows.length; i++) {
+    if (backgroundWindows[i]) {
+      backgroundWindows[i].destroy();
+      backgroundWindows[i] = null;
+    }
+  }
+  backgroundWindows = [];
+}
 
 function createBackgroundWindows() {
-  //busyWindows = [];
-  // used to have 8, now just 1 background window
-  if (winCount < 1) {
-    var back = new BrowserWindow({
-      show: false,
-      webPreferences: {
-        contextIsolation: false,
-        enableRemoteModule: true,
-        nodeIntegration: true,
-        nativeWindowOpen: true,
-      },
-    });
-
-    remote.enable(back.webContents);
-
-    if (process.env["deepnest_debug"] === "1") back.webContents.openDevTools();
-
-    back.loadURL(
-      url.format({
-        pathname: path.join(__dirname, "./main/background.html"),
-        protocol: "file:",
-        slashes: true,
-      })
-    );
-
-    backgroundWindows[winCount] = back;
-
-    back.once("ready-to-show", () => {
-      //back.show();
-      winCount++;
-      createBackgroundWindows();
-    });
-    back.webContents.on('render-process-gone', (event, details) => { console.error('Render process gone:', event, details); });
-    back.on('render-process-gone', (event) => { console.error('Render process gone:', event); });
-  }
+  ensureBackgroundWindows(workerPoolSize);
 }
 
 // This method will be called when Electron has finished
@@ -326,14 +421,29 @@ app.on("before-quit", function () {
 //ipcMain.on('background-response', (event, payload) => mainWindow.webContents.send('background-response', payload));
 //ipcMain.on('background-start', (event, payload) => backgroundWindows[0].webContents.send('background-start', payload));
 
-ipcMain.on("background-start", function (event, payload) {
-  console.log("starting background!");
+ipcMain.on("background-ready", function (event) {
   for (var i = 0; i < backgroundWindows.length; i++) {
-    if (backgroundWindows[i] && !backgroundWindows[i].isBusy) {
-      backgroundWindows[i].isBusy = true;
-      backgroundWindows[i].webContents.send("background-start", payload);
-      break;
+    try {
+      if (backgroundWindows[i] && backgroundWindows[i].webContents == event.sender) {
+        backgroundWindows[i].isReady = true;
+        flushPendingWork();
+        break;
+      }
+    } catch (ex) {
+      // window may already be destroyed
     }
+  }
+});
+
+ipcMain.on("background-set-threads", function (event, n) {
+  ensureBackgroundWindows(n);
+  flushPendingWork();
+});
+
+ipcMain.on("background-start", function (event, payload) {
+  if (!dispatchWork(payload)) {
+    pendingWork.push(payload);
+    ensureBackgroundWindows(workerPoolSize);
   }
 });
 
@@ -341,8 +451,10 @@ ipcMain.on("background-response", function (event, payload) {
   for (var i = 0; i < backgroundWindows.length; i++) {
     // todo: hack to fix errors on app closing - should instead close workers when window is closed
     try {
-      if (backgroundWindows[i].webContents == event.sender) {
-        mainWindow.webContents.send("background-response", payload);
+      if (backgroundWindows[i] && backgroundWindows[i].webContents == event.sender) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("background-response", payload);
+        }
         backgroundWindows[i].isBusy = false;
         break;
       }
@@ -350,6 +462,8 @@ ipcMain.on("background-response", function (event, payload) {
       // ignore errors, as they can reference destroyed objects during a window close event
     }
   }
+  flushPendingWork();
+  ensureBackgroundWindows(workerPoolSize);
 });
 
 ipcMain.on("background-progress", function (event, payload) {
@@ -362,17 +476,8 @@ ipcMain.on("background-progress", function (event, payload) {
 });
 
 ipcMain.on("background-stop", function (event) {
-  for (var i = 0; i < backgroundWindows.length; i++) {
-    if (backgroundWindows[i]) {
-      backgroundWindows[i].destroy();
-      backgroundWindows[i] = null;
-    }
-  }
-  winCount = 0;
-
+  destroyBackgroundWindows();
   createBackgroundWindows();
-
-  console.log("stopped!", backgroundWindows);
 });
 
 // Backward compat with https://electron-settings.js.org/index.html#configure

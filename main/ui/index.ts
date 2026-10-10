@@ -514,7 +514,9 @@ function initializeBackgroundProgress(): void {
   ipcRenderer.on(IPC_CHANNELS.BACKGROUND_PROGRESS, (_event: unknown, ...args: unknown[]) => {
     const p = args[0] as NestingProgress;
     const bar = getElement<HTMLElement>("#progressbar");
-    if (bar) {
+    // A finished worker reports progress < 0. Ignore that so one of several
+    // parallel individuals cannot blank the bar while the others are still going.
+    if (bar && p && typeof p.progress === "number" && isFinite(p.progress) && p.progress >= 0) {
       const progress = p.progress;
       const style = `width: ${parseInt(String(progress * 100))}%${progress < 0.01 ? "; transition: none" : ""}`;
       bar.setAttribute("style", style);

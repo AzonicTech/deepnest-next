@@ -7,6 +7,7 @@ import { Point } from '../build/util/point.js';
 import { HullPolygon } from '../build/util/HullPolygon.js';
 
 const { simplifyPolygon: simplifyPoly } = require("@deepnest/svg-preprocessor");
+const NestPlateau = require("./util/plateau.js");
 
 var config = {
   clipperScale: 10000000,
@@ -22,6 +23,11 @@ var config = {
   scale: 72,
   simplify: false,
   overlapTolerance: 0.0001,
+  // Stop on its own once the best layout stops improving. Either limit can
+  // fire. 0 disables that limit. stopOnPlateau false runs until Stop.
+  stopOnPlateau: true,
+  plateauGenerations: 10,
+  plateauSeconds: 60,
 };
 
 export class DeepNest {
@@ -46,10 +52,20 @@ export class DeepNest {
 
     this.progressCallback = null;
     this.displayCallback = null;
+    this.doneCallback = null;
     // a running list of placements
     this.nests = [];
 
     this.eventEmitter = eventEmitter;
+    this.nestStatus = "";
+    this.plateau = null;
+    this.cachedSheets = null;
+    // True once the current finished generation has been handed to the
+    // plateau detector. Prevents a resume from counting that generation twice.
+    this.generationReported = false;
+    this.nestResultDirty = false;
+    this._responseBound = false;
+    this.bindResponseListener();
   }
 
   importsvg(
@@ -556,6 +572,24 @@ export class DeepNest {
       config.scale = parseFloat(c.scale);
     }
 
+    if (c.stopOnPlateau === true || c.stopOnPlateau === false) {
+      config.stopOnPlateau = !!c.stopOnPlateau;
+    }
+
+    if ("plateauGenerations" in c) {
+      var plateauGens = parseInt(c.plateauGenerations, 10);
+      if (!isNaN(plateauGens) && plateauGens >= 0) {
+        config.plateauGenerations = plateauGens;
+      }
+    }
+
+    if ("plateauSeconds" in c) {
+      var plateauSecs = parseInt(c.plateauSeconds, 10);
+      if (!isNaN(plateauSecs) && plateauSecs >= 0) {
+        config.plateauSeconds = plateauSecs;
+      }
+    }
+
     window.SvgParser.config({
       tolerance: config.curveTolerance,
       endpointTolerance: c.endpointTolerance,
@@ -564,6 +598,20 @@ export class DeepNest {
     //nfpCache = {};
     //binPolygon = null;
     this.GA = null;
+    this.generationReported = false;
+    this.cachedSheets = null;
+    if (this.plateau) {
+      this.plateau.configure({
+        enabled: !!config.stopOnPlateau,
+        plateauGenerations: config.plateauGenerations,
+        plateauSeconds: config.plateauSeconds,
+        minGenerations: 1,
+      });
+      this.plateau.reset();
+    }
+    if (this.eventEmitter && config.threads) {
+      this.eventEmitter.send("background-set-threads", config.threads);
+    }
 
     return config;
   };
@@ -997,9 +1045,12 @@ export class DeepNest {
 
   // progressCallback is called when progress is made
   // displayCallback is called when a new placement has been made
-  start(p, d) {
+  // doneCallback is called when nesting auto-stops (plateau)
+  start(p, d, done) {
     this.progressCallback = p;
     this.displayCallback = d;
+    this.doneCallback = done || null;
+    this.cachedSheets = null;
 
     var parts = [];
 
@@ -1081,82 +1132,190 @@ export class DeepNest {
     var self = this;
     this.working = true;
 
+    if (!this.plateau) {
+      this.plateau = NestPlateau.create();
+    }
+    this.plateau.configure({
+      enabled: !!config.stopOnPlateau,
+      plateauGenerations: config.plateauGenerations,
+      plateauSeconds: config.plateauSeconds,
+      minGenerations: 1,
+    });
+    // A fresh search clears the stall clock. Restarting after an auto-stop
+    // keeps the GA (and the best nest) and only clears the stall clocks.
+    if (this.GA === null) {
+      this.plateau.reset();
+      this.generationReported = false;
+    } else {
+      this.plateau.resume();
+    }
+    this.nestStatus = this.plateau.statusText();
+
+    if (this.eventEmitter) {
+      this.eventEmitter.send("background-set-threads", config.threads);
+    }
+
     if (!this.workerTimer) {
       this.workerTimer = setInterval(function () {
+        if (!self.working) {
+          return;
+        }
         self.launchWorkers.call(
           self,
           parts,
           config,
-          this.progressCallback,
-          this.displayCallback
+          self.progressCallback,
+          self.displayCallback
         );
-        //progressCallback(progress);
       }, 100);
     }
+  };
 
-    this.eventEmitter.on("background-response", (event, payload) => {
-      this.eventEmitter.send("setPlacements", payload);
-      console.log("ipc response", payload);
-      if (!this.GA) {
-        // user might have quit while we're away
-        return;
-      }
-      this.GA.population[payload.index].processing = false;
-      this.GA.population[payload.index].fitness = payload.fitness;
-
-      // render placement
-      if (this.nests.length == 0 || this.nests[0].fitness > payload.fitness) {
-        this.nests.unshift(payload);
-
-        // Check if we should keep a long list (more than 100 results)
-        const keepLongList = process.env.DEEPNEST_LONGLIST;
-
-        if (keepLongList) {
-          // Keep up to 100 results without sorting
-          if (this.nests.length > 100) {
-            this.nests.pop();
-          }
-        } else {
-          // Original behavior - keep only top 10 by fitness
-          if (this.nests.length > 10) {
-            this.nests.pop();
-          }
-        }
-
-        if (this.displayCallback) {
-          this.displayCallback();
-        }
-      } else if (process.env.DEEPNEST_LONGLIST) {
-        // With DEEPNEST_LONGLIST, we add the result to the list regardless of fitness
-        // Just make sure it's not worse than the worst result we already have
-        const worstFitness = Math.min(...this.nests.map(item => item.fitness));
-        if (this.nests.length < 100 || payload.fitness > worstFitness) {
-          // Find where to insert this result to maintain insertion order
-          this.nests.push(payload);
-
-          // If we exceeded 100 results, remove the worst one
-          if (this.nests.length > 100) {
-            // Find the worst fitness
-            let worstIndex = 0;
-            let worstFitness = this.nests[0].fitness;
-
-            for (let i = 1; i < this.nests.length; i++) {
-              if (this.nests[i].fitness > worstFitness) {
-                worstIndex = i;
-                worstFitness = this.nests[i].fitness;
-              }
-            }
-
-            // Remove the worst fitness item
-            this.nests.splice(worstIndex, 1);
-          }
-
-          if (this.displayCallback) {
-            this.displayCallback();
-          }
-        }
-      }
+  bindResponseListener() {
+    if (this._responseBound || !this.eventEmitter || !this.eventEmitter.on) {
+      return;
+    }
+    this._responseBound = true;
+    var self = this;
+    this.eventEmitter.on("background-response", function (event, payload) {
+      self.handleBackgroundResponse(payload);
     });
+  };
+
+  handleBackgroundResponse(payload) {
+    if (this.eventEmitter) {
+      this.eventEmitter.send("setPlacements", payload);
+    }
+    if (!payload || !this.GA || !this.GA.population || !this.GA.population[payload.index]) {
+      // user might have quit while we're away
+      return;
+    }
+    // A result can still be in flight after Stop or an auto-stop. Keep a
+    // better layout for export, but do not write onto the population: resume
+    // may already have evolved a new generation at this index.
+    if (!this.working) {
+      if (this.recordNest(payload) && this.displayCallback) {
+        this.displayCallback();
+      }
+      return;
+    }
+    this.GA.population[payload.index].processing = false;
+    this.GA.population[payload.index].fitness = payload.fitness;
+
+    var changed = this.recordNest(payload);
+
+    if (this.plateau) {
+      var decision = this.plateau.onResult(payload.fitness);
+      this.nestStatus = this.plateau.statusText();
+      if (decision && decision.stop && this.working) {
+        var stillWorking = this.GA.population.some(function (ind) {
+          return !!ind.processing;
+        });
+        if (!stillWorking) {
+          // The time limit can trip on the result that finishes a generation,
+          // before launchWorkers gets to count it. Record that generation now
+          // so Start nest evolves forward instead of scoring it a second time.
+          var generationDecision = this.reportFinishedGeneration();
+          this.haltForPlateau(generationDecision || decision);
+          return;
+        }
+      }
+    }
+
+    if ((changed || this.plateau) && this.displayCallback) {
+      this.displayCallback();
+    }
+  };
+
+  recordNest(payload) {
+    var changed = false;
+    if (this.nests.length == 0 || this.nests[0].fitness > payload.fitness) {
+      this.nests.unshift(payload);
+      changed = true;
+
+      // Check if we should keep a long list (more than 100 results)
+      const keepLongList = process.env.DEEPNEST_LONGLIST;
+
+      if (keepLongList) {
+        // Keep up to 100 results without sorting
+        if (this.nests.length > 100) {
+          this.nests.pop();
+        }
+      } else {
+        // Original behavior - keep only top 10 by fitness
+        if (this.nests.length > 10) {
+          this.nests.pop();
+        }
+      }
+    } else if (process.env.DEEPNEST_LONGLIST) {
+      // With DEEPNEST_LONGLIST, we add the result to the list regardless of fitness
+      // Just make sure it's not worse than the worst result we already have
+      const worstFitness = Math.min(...this.nests.map(item => item.fitness));
+      if (this.nests.length < 100 || payload.fitness > worstFitness) {
+        // Find where to insert this result to maintain insertion order
+        this.nests.push(payload);
+        changed = true;
+
+        // If we exceeded 100 results, remove the worst one
+        if (this.nests.length > 100) {
+          // Find the worst fitness
+          let worstIndex = 0;
+          let worstFitness = this.nests[0].fitness;
+
+          for (let i = 1; i < this.nests.length; i++) {
+            if (this.nests[i].fitness > worstFitness) {
+              worstIndex = i;
+              worstFitness = this.nests[i].fitness;
+            }
+          }
+
+          // Remove the worst fitness item
+          this.nests.splice(worstIndex, 1);
+        }
+      }
+    }
+
+    if (changed) {
+      this.nestResultDirty = true;
+    }
+    return changed;
+  };
+
+  // Count a fully evaluated generation one time. Returns the plateau
+  // decision, or null when the generation is incomplete or already counted.
+  reportFinishedGeneration() {
+    if (!this.plateau || !this.GA || !this.GA.population || this.generationReported) {
+      return null;
+    }
+    var generationFitness = [];
+    for (var i = 0; i < this.GA.population.length; i++) {
+      var fitness = this.GA.population[i].fitness;
+      if (typeof fitness !== "number" || !isFinite(fitness)) {
+        return null;
+      }
+      generationFitness.push(fitness);
+    }
+    this.generationReported = true;
+    var decision = this.plateau.onGeneration(generationFitness);
+    this.nestStatus = this.plateau.statusText();
+    return decision;
+  };
+
+  haltForPlateau(decision) {
+    if (!this.working) {
+      return;
+    }
+    this.stop();
+    if (this.eventEmitter) {
+      this.eventEmitter.send("background-stop");
+    }
+    this.nestStatus = NestPlateau.formatStopMessage(decision);
+    if (this.displayCallback) {
+      this.displayCallback();
+    }
+    if (this.doneCallback) {
+      this.doneCallback(decision);
+    }
   };
 
   padNumber(n, width, z) {
@@ -1171,24 +1330,8 @@ export class DeepNest {
     progressCallback,
     displayCallback
   ) {
-    function shuffle(array) {
-      var currentIndex = array.length,
-        temporaryValue,
-        randomIndex;
-
-      // While there remain elements to shuffle...
-      while (0 !== currentIndex) {
-        // Pick a remaining element...
-        randomIndex = Math.floor(Math.random() * currentIndex);
-        currentIndex -= 1;
-
-        // And swap it with the current element.
-        temporaryValue = array[currentIndex];
-        array[currentIndex] = array[randomIndex];
-        array[randomIndex] = temporaryValue;
-      }
-
-      return array;
+    if (!this.working) {
+      return;
     }
 
     var i, j;
@@ -1221,54 +1364,104 @@ export class DeepNest {
       });
 
       this.GA = new GeneticAlgorithm(adam, config);
+      this.generationReported = false;
       //console.log(GA.population[1].placement);
+    }
+
+    function isEvaluated(individual) {
+      return typeof individual.fitness === "number" && isFinite(individual.fitness);
     }
 
     // check if current generation is finished
     var finished = true;
-    for (var i = 0; i < this.GA.population.length; i++) {
-      if (!this.GA.population[i].fitness) {
+    for (i = 0; i < this.GA.population.length; i++) {
+      if (!isEvaluated(this.GA.population[i])) {
         finished = false;
         break;
       }
     }
 
     if (finished) {
-      console.log("new generation!");
+      // Count this generation once. A resume after auto-stop must evolve
+      // forward instead of feeding the same finished population in again.
+      if (!this.generationReported) {
+        var decision = this.reportFinishedGeneration();
+        if (decision && displayCallback) {
+          displayCallback();
+        }
+        if (decision && decision.stop) {
+          this.haltForPlateau(decision);
+          return;
+        }
+      }
+      this.generationReported = false;
       // all individuals have been evaluated, start next generation
       this.GA.generation();
+    }
+
+    if (this.plateau) {
+      var timeDecision = this.plateau.evaluate();
+      var nextStatus = this.plateau.statusText();
+      if (nextStatus !== this.nestStatus) {
+        this.nestStatus = nextStatus;
+        if (displayCallback) {
+          displayCallback();
+        }
+      }
+      if (timeDecision && timeDecision.stop) {
+        var inflight = this.GA.population.some(function (individual) {
+          return !!individual.processing;
+        });
+        if (!inflight) {
+          this.haltForPlateau(timeDecision);
+        }
+        return;
+      }
     }
 
     var running = this.GA.population.filter(function (p) {
       return !!p.processing;
     }).length;
 
-    var sheets = [];
-    var sheetids = [];
-    var sheetsources = [];
-    var sheetchildren = [];
-    var sid = 0;
-
-    for (var i = 0; i < parts.length; i++) {
-      if (parts[i].sheet) {
-        var poly = parts[i].polygontree;
-        for (var j = 0; j < parts[i].quantity; j++) {
-          sheets.push(poly);
-          sheetids.push(this.padNumber(sid, 4) + '-' + this.padNumber(j, 4));
-          sheetsources.push(i);
-          sheetchildren.push(poly.children);
-        }
-        sid++;
-      }
+    var threadLimit = Math.max(1, Math.min(8, parseInt(config.threads, 10) || 1));
+    if (running >= threadLimit) {
+      return;
     }
 
-    for (var i = 0; i < this.GA.population.length; i++) {
-      //if(running < config.threads && !GA.population[i].processing && !GA.population[i].fitness){
-      // only one background window now...
+    if (!this.cachedSheets) {
+      var sheets = [];
+      var sheetids = [];
+      var sheetsources = [];
+      var sheetchildren = [];
+      var sid = 0;
+
+      for (i = 0; i < parts.length; i++) {
+        if (parts[i].sheet) {
+          var poly = parts[i].polygontree;
+          for (j = 0; j < parts[i].quantity; j++) {
+            sheets.push(poly);
+            sheetids.push(this.padNumber(sid, 4) + "-" + this.padNumber(j, 4));
+            sheetsources.push(i);
+            sheetchildren.push(poly.children);
+          }
+          sid++;
+        }
+      }
+      this.cachedSheets = {
+        sheets: sheets,
+        sheetids: sheetids,
+        sheetsources: sheetsources,
+        sheetchildren: sheetchildren,
+      };
+    }
+
+    var sheetPack = this.cachedSheets;
+
+    for (i = 0; i < this.GA.population.length; i++) {
       if (
-        running < 1 &&
+        running < threadLimit &&
         !this.GA.population[i].processing &&
-        !this.GA.population[i].fitness
+        !isEvaluated(this.GA.population[i])
       ) {
         this.GA.population[i].processing = true;
 
@@ -1291,10 +1484,10 @@ export class DeepNest {
 
         this.eventEmitter.send("background-start", {
           index: i,
-          sheets: sheets,
-          sheetids: sheetids,
-          sheetsources: sheetsources,
-          sheetchildren: sheetchildren,
+          sheets: sheetPack.sheets,
+          sheetids: sheetPack.sheetids,
+          sheetsources: sheetPack.sheetsources,
+          sheetchildren: sheetPack.sheetchildren,
           individual: this.GA.population[i],
           config: config,
           ids: ids,
@@ -1499,11 +1692,19 @@ export class DeepNest {
 
   reset() {
     this.GA = null;
+    this.cachedSheets = null;
+    this.generationReported = false;
+    this.nestResultDirty = false;
+    if (this.plateau) {
+      this.plateau.reset();
+    }
+    this.nestStatus = "";
     while (this.nests.length > 0) {
       this.nests.pop();
     }
     this.progressCallback = null;
     this.displayCallback = null;
+    this.doneCallback = null;
   };
 }
 

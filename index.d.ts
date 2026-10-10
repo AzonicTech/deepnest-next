@@ -51,6 +51,21 @@ export type DeepNestConfig = {
   timeRatio: number;
   /** Enable polygon simplification */
   simplify: boolean;
+  /**
+   * Stop the genetic search when the best layout stops improving.
+   * Uncheck to run until Stop is clicked.
+   */
+  stopOnPlateau: boolean;
+  /**
+   * Stop after this many generations with no fitness improvement.
+   * 0 disables the generation limit.
+   */
+  plateauGenerations: number;
+  /**
+   * Stop after this many seconds with no fitness improvement, measured
+   * from the end of the first full generation. 0 disables the time limit.
+   */
+  plateauSeconds: number;
   /** Scale factor for DXF import */
   dxfImportScale: number;
   /** Scale factor for DXF export */
@@ -200,6 +215,10 @@ export interface DeepNestInstance {
   nests: NestingResult[];
   /** Whether nesting is currently running */
   working: boolean;
+  /** Generation / stall line shown beside the nest list */
+  nestStatus?: string;
+  /** True when a new placement should be drawn, not just the status line */
+  nestResultDirty?: boolean;
 
   /**
    * Import an SVG file
@@ -232,7 +251,8 @@ export interface DeepNestInstance {
    */
   start(
     progressCallback: ((progress: { index: number; progress: number }) => void) | null,
-    displayCallback: (() => void) | null
+    displayCallback: (() => void) | null,
+    doneCallback?: ((decision: { stop?: boolean; reason?: string | null }) => void) | null
   ): void;
 
   /**
