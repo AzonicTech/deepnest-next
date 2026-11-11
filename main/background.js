@@ -373,6 +373,10 @@ window.onload = function () {
     }
   });
 
+  ipcRenderer.on('distribution-fit', function (event, data) {
+    runDistributionFit(ipcRenderer, data);
+  });
+
   ipcRenderer.send('background-ready');
 };
 
@@ -1912,6 +1916,119 @@ function placeParts(sheets, parts, config, nestindex) {
   debugLog('Utilisation of the sheet(s): ' + utilisation.toFixed(2) + '%');
 
   return { placements: allplacements, fitness: fitness, area: totalplacedarea, totalarea: totalusablesheetarea, mergedLength: totalMerged, utilisation: utilisation };
+}
+
+function revivePolygon(node) {
+  var poly = [];
+  var points = (node && node.points) || [];
+  for (var i = 0; i < points.length; i++) {
+    poly.push({ x: points[i].x, y: points[i].y });
+  }
+  if (node && node.children && node.children.length) {
+    poly.children = [];
+    for (var c = 0; c < node.children.length; c++) {
+      poly.children.push(revivePolygon(node.children[c]));
+    }
+  }
+  return poly;
+}
+
+function clonePolygon(poly) {
+  var copy = [];
+  for (var i = 0; i < poly.length; i++) {
+    copy.push({ x: poly[i].x, y: poly[i].y });
+  }
+  if (poly.children && poly.children.length) {
+    copy.children = [];
+    for (var c = 0; c < poly.children.length; c++) {
+      copy.children.push(clonePolygon(poly.children[c]));
+    }
+  }
+  return copy;
+}
+
+// Binary-search how many copies fit. Uses the same placeParts path as a nest.
+function runDistributionFit(ipcRenderer, data) {
+  var NestDistribution = require('./util/distribution.js');
+  var originalSend = ipcRenderer.send;
+  ipcRenderer.send = function (channel) {
+    if (channel === 'background-progress') {
+      return;
+    }
+    return originalSend.apply(ipcRenderer, arguments);
+  };
+  try {
+    var result = fitDistribution(NestDistribution, data || {});
+    originalSend.call(ipcRenderer, 'distribution-fit-result', {
+      id: data && data.id,
+      ok: true,
+      result: result
+    });
+  } catch (err) {
+    originalSend.call(ipcRenderer, 'distribution-fit-result', {
+      id: data && data.id,
+      ok: false,
+      error: err && err.message ? err.message : String(err)
+    });
+  } finally {
+    ipcRenderer.send = originalSend;
+  }
+}
+
+function fitDistribution(NestDistribution, data) {
+  var items = data.items || [];
+  var templates = items.map(function (item) {
+    return revivePolygon(item.polygon);
+  });
+  var config = data.config || {};
+
+  function makeSheets() {
+    var sheets = [];
+    items.forEach(function (item, index) {
+      if (!item.sheet) return;
+      var q = Math.floor(Number(item.quantity));
+      if (!isFinite(q)) q = 1;
+      if (q < 0) q = 0;
+      for (var n = 0; n < q; n++) {
+        var poly = clonePolygon(templates[index]);
+        poly.source = index;
+        poly.id = 'sheet-' + index + '-' + n;
+        poly.rotation = 0;
+        sheets.push(poly);
+      }
+    });
+    return sheets;
+  }
+
+  function places(sequence, rotationByIndex) {
+    if (!sequence || sequence.length === 0) return false;
+    var parts = sequence.map(function (index, n) {
+      var poly = clonePolygon(templates[index]);
+      poly.source = index;
+      poly.id = n;
+      poly.rotation = rotationByIndex && rotationByIndex[index] ? rotationByIndex[index] : 0;
+      poly.filename = items[index] && items[index].filename;
+      return poly;
+    });
+    var result = null;
+    try {
+      result = placeParts(makeSheets(), parts, config, -1);
+    } catch (err) {
+      return false;
+    }
+    if (!result || !result.placements) return false;
+    var placed = 0;
+    for (var i = 0; i < result.placements.length; i++) {
+      placed += result.placements[i].sheetplacements.length;
+    }
+    return placed === parts.length;
+  }
+
+  return NestDistribution.runMaxOut({
+    even: !!data.even,
+    rotations: data.rotations,
+    items: items
+  }, places);
 }
 
 // clipperjs uses alerts for warnings

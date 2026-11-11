@@ -110,6 +110,83 @@ interface PartsViewData {
   getSheets: () => Part[];
   serializeSvg: (svg: SVGElement) => string;
   partrenderer: (part: Part) => string;
+  useDistribution: boolean;
+  evenDistribution: boolean;
+  distributionMode: "maxout" | "count";
+  distributionTotal: string | number;
+  distributionHint: string;
+}
+
+interface DistributionItem {
+  sheet: boolean;
+  filename: string;
+  width: number;
+  height: number;
+  area: number;
+  quantity: number;
+  percent: number | null;
+}
+
+interface PartCountPlan {
+  quantities: number[] | null;
+  hint: string;
+  ok: boolean;
+  sequence: number[];
+  rotationByIndex: Record<string, number>;
+  totalParts: number;
+}
+
+interface MaxOutPlan {
+  ceiling: number;
+  minLevel: number;
+  roughHint: () => string;
+}
+
+interface FitResult {
+  quantities: number[];
+  sequence: number[];
+  rotationByIndex: Record<string, number>;
+  hint: string;
+  totalParts: number;
+}
+
+type DistributionPrep =
+  | { ok: false; message: string }
+  | { ok: true; probe: false }
+  | {
+      ok: true;
+      probe: true;
+      payload: {
+        even: boolean;
+        rotations: number;
+        config: Record<string, unknown>;
+        items: unknown[];
+      };
+      apply: (result: FitResult) => void;
+    };
+
+interface NestDistributionApi {
+  equalPercents(count: number): number[];
+  planPartCount(input: {
+    even: boolean;
+    total: number | null;
+    rotations: number;
+    items: DistributionItem[];
+  }): PartCountPlan;
+  maxOutSearch(input: {
+    even: boolean;
+    rotations: number;
+    items: DistributionItem[];
+  }): MaxOutPlan;
+}
+
+const IDLE_HINT =
+  "Quantities are whatever you type in the list. Turn on Use distribution to set them from a mix.";
+
+declare global {
+  interface Window {
+    NestDistribution?: NestDistributionApi;
+  }
 }
 
 /**
@@ -189,6 +266,9 @@ export class PartsViewService {
 
   /** Flag to track if service has been initialized */
   private initialized = false;
+
+  /** Stops a distribution refresh from reacting to its own quantity writes */
+  private applyingDistribution = false;
 
   /**
    * Create a new PartsViewService instance
@@ -447,8 +527,189 @@ export class PartsViewService {
    * Update the parts data in Ractive
    */
   update(): void {
+    this.refreshDistribution();
     if (this.ractive) {
       this.ractive.update("parts");
+    }
+  }
+
+  /**
+   * Apply the mix before a nest starts. Max-out returns a payload for the
+   * background fitter; part count writes quantities immediately.
+   */
+  prepareForNest(): DistributionPrep {
+    const state = this.readDistribution();
+    if (!state.use) {
+      this.deepNest.compactPlacement = false;
+      this.deepNest.distributionSeed = null;
+      this.deepNest.noteDistribution(null);
+      return { ok: true, probe: false };
+    }
+
+    if (state.mode === "count") {
+      if (!state.even) this.ensurePercents();
+      const plan = this.planner().planPartCount({
+        even: state.even,
+        total: state.total,
+        rotations: this.rotationCount(),
+        items: this.distributionItems(),
+      });
+      this.setHint(plan.hint);
+      if (!plan.ok || !plan.quantities) {
+        return { ok: false, message: plan.hint };
+      }
+      this.writeQuantities(plan.quantities);
+      this.deepNest.compactPlacement = true;
+      this.deepNest.distributionSeed = {
+        sequence: plan.sequence,
+        rotationBySource: plan.rotationByIndex,
+      };
+      this.deepNest.noteDistribution("count|" + (state.even ? "even" : "percent") + "|" + plan.quantities.join(","));
+      if (this.ractive) this.ractive.update("parts");
+      return { ok: true, probe: false };
+    }
+
+    const shapes = this.deepNest.nestShapes() as unknown as DistributionItem[];
+    const rough = this.planner().maxOutSearch({
+      even: state.even,
+      rotations: this.rotationCount(),
+      items: shapes,
+    });
+    this.setHint(rough.roughHint());
+    if (rough.ceiling <= 0 && rough.minLevel <= 0) {
+      return { ok: false, message: rough.roughHint() };
+    }
+    this.deepNest.compactPlacement = false;
+    return {
+      ok: true,
+      probe: true,
+      payload: {
+        even: state.even,
+        rotations: this.rotationCount(),
+        config: this.deepNest.placementConfig(),
+        items: shapes,
+      },
+      apply: (result) => {
+        this.writeQuantities(result.quantities);
+        this.deepNest.compactPlacement = false;
+        this.deepNest.distributionSeed = {
+          sequence: result.sequence,
+          rotationBySource: result.rotationByIndex,
+        };
+        this.deepNest.noteDistribution(
+          "maxout|" + (state.even ? "even" : "percent") + "|" + result.quantities.join(",")
+        );
+        this.setHint(result.hint);
+        if (this.ractive) this.ractive.update("parts");
+      },
+    };
+  }
+
+  private planner(): NestDistributionApi {
+    const api = window.NestDistribution;
+    if (!api) {
+      throw new Error("Distribution planner is not loaded");
+    }
+    return api;
+  }
+
+  private readDistribution(): { use: boolean; even: boolean; mode: "maxout" | "count"; total: number | null } {
+    if (!this.ractive) {
+      return { use: false, even: true, mode: "maxout", total: null };
+    }
+    const mode = this.ractive.get("distributionMode") === "count" ? "count" : "maxout";
+    const raw = this.ractive.get("distributionTotal");
+    const total = raw === "" || raw == null ? null : Number(raw);
+    return {
+      use: !!this.ractive.get("useDistribution"),
+      even: !!this.ractive.get("evenDistribution"),
+      mode,
+      total: total == null || Number.isNaN(total) ? null : total,
+    };
+  }
+
+  private rotationCount(): number {
+    const value = Number(this.config.getSync("rotations"));
+    return value > 0 ? value : 4;
+  }
+
+  private distributionItems(): DistributionItem[] {
+    return this.deepNest.parts.map((part) => ({
+      sheet: !!part.sheet,
+      filename: part.filename || "",
+      width: part.bounds?.width || 0,
+      height: part.bounds?.height || 0,
+      area: part.area || 0,
+      quantity: Number(part.quantity) || 0,
+      percent:
+        part.distributionPercent == null || (part.distributionPercent as unknown) === ""
+          ? null
+          : Number(part.distributionPercent),
+    }));
+  }
+
+  private ensurePercents(): void {
+    const pieces = this.deepNest.parts.filter((part) => !part.sheet);
+    const anySet = pieces.some(
+      (part) => part.distributionPercent != null && (part.distributionPercent as unknown) !== ""
+    );
+    if (anySet) return;
+    const shares = this.planner().equalPercents(pieces.length);
+    pieces.forEach((part, index) => {
+      part.distributionPercent = shares[index];
+    });
+  }
+
+  private writeQuantities(quantities: number[]): void {
+    this.deepNest.parts.forEach((part, index) => {
+      if (part.sheet) return;
+      if (typeof quantities[index] === "number") {
+        part.quantity = quantities[index];
+      }
+    });
+  }
+
+  private setHint(hint: string): void {
+    if (this.ractive) {
+      this.ractive.set("distributionHint", hint);
+    }
+  }
+
+  private refreshDistribution(): void {
+    const ractive = this.ractive;
+    if (this.applyingDistribution || !ractive) return;
+    this.applyingDistribution = true;
+    try {
+      const state = this.readDistribution();
+      if (!state.use) {
+        this.setHint(IDLE_HINT);
+        return;
+      }
+      if (state.mode === "count") {
+        if (!state.even) this.ensurePercents();
+        const plan = this.planner().planPartCount({
+          even: state.even,
+          total: state.total,
+          rotations: this.rotationCount(),
+          items: this.distributionItems(),
+        });
+        if (plan.quantities) {
+          this.writeQuantities(plan.quantities);
+          ractive.update("parts");
+        }
+        this.setHint(plan.hint);
+        return;
+      }
+      const rough = this.planner().maxOutSearch({
+        even: state.even,
+        rotations: this.rotationCount(),
+        items: this.distributionItems(),
+      });
+      this.setHint(rough.roughHint());
+    } catch (err) {
+      this.setHint(err instanceof Error ? err.message : "Could not update the distribution.");
+    } finally {
+      this.applyingDistribution = false;
     }
   }
 
@@ -501,6 +762,11 @@ export class PartsViewService {
         serializeSvg: function (svg: SVGElement): string {
           return serializeSvg(svg);
         },
+        useDistribution: false,
+        evenDistribution: true,
+        distributionMode: "maxout",
+        distributionTotal: "",
+        distributionHint: IDLE_HINT,
         partrenderer: function (part: Part): string {
           const svg = createSvgElement("svg");
           setAttributes(svg, {
@@ -528,6 +794,9 @@ export class PartsViewService {
         getUnits: function (): string {
           const units = config.getSync("units");
           return units === "mm" ? "mm" : "in";
+        },
+        showPercents: function (this: { get(key: string): unknown }): boolean {
+          return !!this.get("useDistribution") && !this.get("evenDistribution");
         },
       },
       components: { dimensionLabel: this.labelComponent },
@@ -647,6 +916,11 @@ export class PartsViewService {
     // Handle delete button/event
     ractive.on("delete", () => {
       this.deleteParts();
+    });
+
+    ractive.on("distributionchange", () => {
+      if (this.applyingDistribution) return;
+      this.refreshDistribution();
     });
   }
 

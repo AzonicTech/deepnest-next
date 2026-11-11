@@ -8,6 +8,7 @@ import { HullPolygon } from '../build/util/HullPolygon.js';
 
 const { simplifyPolygon: simplifyPoly } = require("@deepnest/svg-preprocessor");
 const NestPlateau = require("./util/plateau.js");
+require("./util/distribution.js");
 
 var config = {
   clipperScale: 10000000,
@@ -65,6 +66,12 @@ export class DeepNest {
     this.generationReported = false;
     this.nestResultDirty = false;
     this._responseBound = false;
+    // Part-count mode packs with gravity for that run only.
+    this.compactPlacement = false;
+    // Order and rotations that are already known to fit, used to seed the GA.
+    this.distributionSeed = null;
+    // When this changes, the current population is for a different mix.
+    this.distributionSignature = null;
     this.bindResponseListener();
   }
 
@@ -1026,39 +1033,10 @@ export class DeepNest {
     return parts;
   };
 
-  cloneTree(tree) {
-    var newtree = [];
-    tree.forEach(function (t) {
-      newtree.push({ x: t.x, y: t.y, exact: t.exact });
-    });
-
-    var self = this;
-    if (tree.children && tree.children.length > 0) {
-      newtree.children = [];
-      tree.children.forEach(function (c) {
-        newtree.children.push(self.cloneTree(c));
-      });
-    }
-
-    return newtree;
-  };
-
-  // progressCallback is called when progress is made
-  // displayCallback is called when a new placement has been made
-  // doneCallback is called when nesting auto-stops (plateau)
-  start(p, d, done) {
-    this.progressCallback = p;
-    this.displayCallback = d;
-    this.doneCallback = done || null;
-    this.cachedSheets = null;
-
+  // Offset clones of the current parts, same path start() uses so a
+  // fit measurement sees the spacing the nest will use.
+  buildWorkingCopies() {
     var parts = [];
-
-    /*while(this.nests.length > 0){
-      this.nests.pop();
-    }*/
-
-    // send only bare essentials through ipc
     for (var i = 0; i < this.parts.length; i++) {
       parts.push({
         quantity: this.parts[i].quantity,
@@ -1087,7 +1065,6 @@ export class DeepNest {
       }
     }
 
-    // offset tree recursively
     function offsetTree(t, offset, offsetFunction, simpleFunction, inside) {
       var simple = t;
       if (simpleFunction) {
@@ -1100,9 +1077,6 @@ export class DeepNest {
       }
 
       if (offsetpaths.length > 0) {
-        //var cleaned = cleanFunction(offsetpaths[0]);
-
-        // replace array items in place
         Array.prototype.splice.apply(t, [0, t.length].concat(offsetpaths[0]));
       }
 
@@ -1129,6 +1103,95 @@ export class DeepNest {
       }
     }
 
+    return parts;
+  };
+
+  nestShapes() {
+    var copies = this.buildWorkingCopies();
+    var self = this;
+    return copies.map(function (part, index) {
+      var bounds = GeometryUtil.getPolygonBounds(part.polygontree);
+      var original = self.parts[index] || {};
+      return {
+        index: index,
+        sheet: !!part.sheet,
+        quantity: part.quantity,
+        filename: part.filename || "",
+        percent: original.distributionPercent == null ? null : original.distributionPercent,
+        width: bounds.width,
+        height: bounds.height,
+        area: bounds.width * bounds.height,
+        polygon: serializePolygon(part.polygontree),
+      };
+    });
+
+    function serializePolygon(tree) {
+      var points = [];
+      for (var i = 0; i < tree.length; i++) {
+        points.push({ x: tree[i].x, y: tree[i].y });
+      }
+      var children = [];
+      if (tree.children && tree.children.length > 0) {
+        for (var c = 0; c < tree.children.length; c++) {
+          children.push(serializePolygon(tree.children[c]));
+        }
+      }
+      return { points: points, children: children };
+    }
+  };
+
+  placementConfig() {
+    return {
+      clipperScale: config.clipperScale,
+      curveTolerance: config.curveTolerance,
+      spacing: config.spacing,
+      rotations: config.rotations,
+      placementType: config.placementType,
+      mergeLines: config.mergeLines,
+      timeRatio: config.timeRatio,
+      scale: config.scale,
+      simplify: config.simplify,
+      overlapTolerance: config.overlapTolerance,
+    };
+  };
+
+  // A new mix must not resume a population built for different quantities.
+  noteDistribution(signature) {
+    if (this.distributionSignature !== signature) {
+      this.GA = null;
+      this.cachedSheets = null;
+      this.generationReported = false;
+      this.distributionSignature = signature;
+    }
+  };
+
+  cloneTree(tree) {
+    var newtree = [];
+    tree.forEach(function (t) {
+      newtree.push({ x: t.x, y: t.y, exact: t.exact });
+    });
+
+    var self = this;
+    if (tree.children && tree.children.length > 0) {
+      newtree.children = [];
+      tree.children.forEach(function (c) {
+        newtree.children.push(self.cloneTree(c));
+      });
+    }
+
+    return newtree;
+  };
+
+  // progressCallback is called when progress is made
+  // displayCallback is called when a new placement has been made
+  // doneCallback is called when nesting auto-stops (plateau)
+  start(p, d, done) {
+    this.progressCallback = p;
+    this.displayCallback = d;
+    this.doneCallback = done || null;
+    this.cachedSheets = null;
+
+    var parts = this.buildWorkingCopies();
     var self = this;
     this.working = true;
 
@@ -1355,15 +1418,49 @@ export class DeepNest {
         }
       }
 
-      // seed with decreasing area
-      adam.sort(function (a, b) {
-        return (
-          Math.abs(GeometryUtil.polygonArea(b)) -
-          Math.abs(GeometryUtil.polygonArea(a))
-        );
-      });
+      if (this.distributionSeed && this.distributionSeed.sequence && this.distributionSeed.sequence.length) {
+        var buckets = {};
+        for (var s = 0; s < adam.length; s++) {
+          var source = adam[s].source;
+          if (!buckets[source]) buckets[source] = [];
+          buckets[source].push(adam[s]);
+        }
+        var ordered = [];
+        var sequence = this.distributionSeed.sequence;
+        for (var s = 0; s < sequence.length; s++) {
+          var bucket = buckets[sequence[s]];
+          if (bucket && bucket.length) ordered.push(bucket.shift());
+        }
+        Object.keys(buckets).forEach(function (source) {
+          buckets[source].forEach(function (poly) {
+            ordered.push(poly);
+          });
+        });
+        adam = ordered;
+      } else {
+        // seed with decreasing area
+        adam.sort(function (a, b) {
+          return (
+            Math.abs(GeometryUtil.polygonArea(b)) -
+            Math.abs(GeometryUtil.polygonArea(a))
+          );
+        });
+      }
 
       this.GA = new GeneticAlgorithm(adam, config);
+      if (this.distributionSeed && this.distributionSeed.rotationBySource) {
+        var rotationBySource = this.distributionSeed.rotationBySource;
+        var seeded = this.GA.population[0];
+        seeded.rotation = seeded.placement.map(function (poly) {
+          var angle = rotationBySource[poly.source];
+          return typeof angle === "number" && isFinite(angle) ? angle : 0;
+        });
+        var seededPop = [seeded];
+        while (seededPop.length < this.GA.population.length) {
+          seededPop.push(this.GA.mutate(seeded));
+        }
+        this.GA.population = seededPop;
+      }
       this.generationReported = false;
       //console.log(GA.population[1].placement);
     }
@@ -1482,6 +1579,11 @@ export class DeepNest {
           filenames[j] = filename;
         }
 
+        var workerConfig = config;
+        if (this.compactPlacement) {
+          workerConfig = Object.assign({}, config, { placementType: "gravity" });
+        }
+
         this.eventEmitter.send("background-start", {
           index: i,
           sheets: sheetPack.sheets,
@@ -1489,7 +1591,7 @@ export class DeepNest {
           sheetsources: sheetPack.sheetsources,
           sheetchildren: sheetPack.sheetchildren,
           individual: this.GA.population[i],
-          config: config,
+          config: workerConfig,
           ids: ids,
           sources: sources,
           children: children,
@@ -1699,6 +1801,9 @@ export class DeepNest {
       this.plateau.reset();
     }
     this.nestStatus = "";
+    this.compactPlacement = false;
+    this.distributionSeed = null;
+    this.distributionSignature = null;
     while (this.nests.length > 0) {
       this.nests.pop();
     }

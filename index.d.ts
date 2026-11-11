@@ -178,6 +178,11 @@ export type Part = {
   sheet?: boolean;
   /** True if currently selected in the UI */
   selected?: boolean;
+  /**
+   * Share of the mix when distribution is in percentage mode.
+   * Null means the part has not been given a percentage yet.
+   */
+  distributionPercent?: number | null;
 };
 
 /**

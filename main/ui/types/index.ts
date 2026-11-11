@@ -135,6 +135,16 @@ export interface DeepNestInstance {
   nestStatus?: string;
   /** True when a new placement should be drawn, not just the status line */
   nestResultDirty?: boolean;
+  /** Part-count nests pack with gravity for that run */
+  compactPlacement: boolean;
+  /** Known-good order and rotations for the current mix */
+  distributionSeed: { sequence: number[]; rotationBySource: Record<string, number> } | null;
+  /** Drop the current population when the mix changes */
+  noteDistribution(signature: string | null): void;
+  /** Offset part and sheet polygons, for a fit measurement */
+  nestShapes(): Array<Record<string, unknown>>;
+  /** Placement settings the background worker should use */
+  placementConfig(): Record<string, unknown>;
 
   /**
    * Import an SVG file

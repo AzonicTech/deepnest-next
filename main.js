@@ -480,6 +480,45 @@ ipcMain.on("background-stop", function (event) {
   createBackgroundWindows();
 });
 
+// One-shot measurement of how many copies fit, before the genetic search starts.
+ipcMain.on("distribution-fit", function (event, payload) {
+  var win = getFreeBackgroundWindow();
+  if (!win) {
+    try {
+      event.sender.send("distribution-fit-result", {
+        id: payload && payload.id,
+        ok: false,
+        error: "Nesting workers are still starting. Try Start nest again in a moment.",
+      });
+    } catch (ex) {
+      // main window may already be closing
+    }
+    return;
+  }
+  win.isBusy = true;
+  win.webContents.send("distribution-fit", payload);
+});
+
+ipcMain.on("distribution-fit-result", function (event, payload) {
+  for (var i = 0; i < backgroundWindows.length; i++) {
+    try {
+      if (backgroundWindows[i] && backgroundWindows[i].webContents == event.sender) {
+        backgroundWindows[i].isBusy = false;
+        break;
+      }
+    } catch (ex) {
+      // window may already be destroyed
+    }
+  }
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("distribution-fit-result", payload);
+    }
+  } catch (ex) {
+    // ignore shutdown races
+  }
+});
+
 // Backward compat with https://electron-settings.js.org/index.html#configure
 const configPath = path.resolve(app.getPath("userData"), "settings.json");
 ipcMain.handle("read-config", () => {

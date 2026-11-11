@@ -189,6 +189,9 @@ export class ImportService {
   /** Callback for resizing parts view after import */
   private resizeCallback: (() => void) | null = null;
 
+  /** Called after parts change so a distribution mix can refresh */
+  private onPartsChanged: (() => void) | null = null;
+
   /** Flag to track if import button is busy */
   private isImporting = false;
 
@@ -210,6 +213,7 @@ export class ImportService {
     attachSortCallback?: () => void;
     applyZoomCallback?: () => void;
     resizeCallback?: () => void;
+    onPartsChanged?: () => void;
   }) {
     if (options) {
       this.dialog = options.dialog || null;
@@ -225,6 +229,7 @@ export class ImportService {
       this.attachSortCallback = options.attachSortCallback || null;
       this.applyZoomCallback = options.applyZoomCallback || null;
       this.resizeCallback = options.resizeCallback || null;
+      this.onPartsChanged = options.onPartsChanged || null;
     }
   }
 
@@ -651,6 +656,10 @@ export class ImportService {
 
     if (this.resizeCallback) {
       this.resizeCallback();
+    }
+
+    if (this.onPartsChanged) {
+      this.onPartsChanged();
     }
   }
 

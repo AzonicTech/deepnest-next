@@ -141,6 +141,23 @@
 
           <div id="parts" class="parts-drag">
 
+          	<div id="distribution" class="{{ useDistribution ? 'on' : '' }}">
+          		<label><input type="checkbox" checked="{{useDistribution}}" on-change="distributionchange" /> Use distribution</label>
+          		<label class="{{ useDistribution ? '' : 'is-inactive' }}">How many
+          			<select value="{{distributionMode}}" on-change="distributionchange">
+          				<option value="maxout">Max out the sheets</option>
+          				<option value="count">Part count</option>
+          			</select>
+          		</label>
+          		<label class="{{ useDistribution ? '' : 'is-inactive' }}"><input type="checkbox" checked="{{evenDistribution}}" on-change="distributionchange" /> Even distribution</label>
+          		{{#if distributionMode === 'count'}}
+          		<label class="{{ useDistribution ? '' : 'is-inactive' }}">Total
+          			<input type="number" min="0" step="1" value="{{distributionTotal}}" on-change="distributionchange" />
+          		</label>
+          		{{/if}}
+          		<p class="dist-hint">{{distributionHint}}</p>
+          	</div>
+
           	<div id="partscroll">
           		<table>
           			<thead>
@@ -149,6 +166,7 @@
           					<th data-sort-field="area"><span>Size</span></th>
           					<th data-sort-field="sheet"><span>Sheet</span></th>
           					<th data-sort-field="quantity"><span>Quantity</span></th>
+          					{{#if showPercents}}<th><span>%</span></th>{{/if}}
           				</tr>
           			</thead>
           			<tbody>
@@ -156,8 +174,15 @@
           					<tr on-mouseenter-mousedown="selecthandler:{{this}}" class='{{ selected ? "active" : "" }}'>
           						<td>{{{ partrenderer(this) }}} <span style="display: none">{{bounds.width}}</span></td>
           						<td><dimensionLabel/></td>
-          						<td><input type="checkbox" checked='{{sheet}}' /></td>
-          						<td><input type="number" min="1" step="1" value="{{quantity}}" /></td>
+          						<td><input type="checkbox" checked='{{sheet}}' on-change="distributionchange" /></td>
+          						<td><input type="number" min="0" step="1" value="{{quantity}}" readonly="{{ useDistribution && !sheet }}" on-change="distributionchange" /></td>
+          						{{#if showPercents}}
+          						<td>
+          							{{#unless sheet}}
+          							<input class="percent" type="number" min="0" max="100" step="any" value="{{distributionPercent}}" on-change="distributionchange" />
+          							{{/unless}}
+          						</td>
+          						{{/if}}
           					</tr>
           				{{/each}}
           			</tbody>

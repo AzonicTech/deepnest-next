@@ -655,6 +655,7 @@ function initializeComponents(): void {
     attachSortCallback: () => partsViewService.attachSort(),
     applyZoomCallback: () => partsViewService.applyZoom(),
     resizeCallback: resize,
+    onPartsChanged: () => partsViewService.update(),
   });
 
   // Initialize export service
@@ -685,6 +686,7 @@ function initializeComponents(): void {
     // Note: nestRactive set separately to avoid type conflicts
     displayNestFn: nestViewService.getDisplayNestCallback(),
     saveJsonFn: () => exportService.exportToJson(),
+    prepareDistribution: () => partsViewService.prepareForNest(),
   });
 
   // Set nestRactive separately to avoid type conflicts
