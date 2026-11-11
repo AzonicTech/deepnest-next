@@ -445,8 +445,9 @@ function entityPath(entity, bounds, commands) {
   }
 }
 
-function convertDxf(input) {
+function convertDxf(input, options) {
   const text = decode(input);
+  const fallbackUnit = options && options.units === "mm" ? "mm" : "in";
   if (text.indexOf("SECTION") === -1) {
     throw new Error("This file is not a DXF drawing");
   }
@@ -478,11 +479,11 @@ function convertDxf(input) {
     );
   }
   const finite = isFinite(bounds.minX);
-  const svg =
-    '<svg xmlns="http://www.w3.org/2000/svg">' + paths.join("") + "</svg>";
+  const insunits = parsed.header ? parsed.header.insUnits : undefined;
+  const svg = svgDocument(paths, finite ? bounds : { minX: 0, minY: 0, maxX: 0, maxY: 0 }, insunits, fallbackUnit);
   return {
     svg: svg,
-    insunits: parsed.header ? parsed.header.insUnits : undefined,
+    insunits: insunits,
     bounds: finite
       ? bounds
       : { minX: 0, minY: 0, maxX: 0, maxY: 0 },
@@ -491,8 +492,73 @@ function convertDxf(input) {
   };
 }
 
-function dxfToSvg(input) {
-  return convertDxf(input).svg;
+function dxfToSvg(input, options) {
+  return convertDxf(input, options).svg;
+}
+
+// Inches per one DXF unit, for $INSUNITS values svgparser cannot name directly.
+// 1 inch, 2 feet, 4 mm, 5 cm, 6 m are the ones shop files use.
+var INCHES_PER_UNIT = {
+  1: 1,
+  2: 12,
+  3: 63360,
+  4: 1 / 25.4,
+  5: 1 / 2.54,
+  6: 1000 / 25.4,
+  7: 1000000 / 25.4,
+  8: 1e-6,
+  9: 0.001,
+  10: 36,
+  11: 1e-10 / 0.0254,
+  12: 1e-9 / 0.0254,
+  13: 1e-6 / 0.0254,
+  14: 0.1 / 0.0254,
+  15: 10 / 0.0254,
+  16: 100 / 0.0254,
+  17: 1000 / 0.0254,
+};
+
+// svgparser understands in, mm, and cm. For those, the width number matches the
+// viewBox (DXF units). Other units are written in inches so the ratio is right.
+function sizeSpec(insunits, fallbackUnit) {
+  var code = Number(insunits);
+  if (code === 1) return { suffix: "in", native: true };
+  if (code === 4) return { suffix: "mm", native: true };
+  if (code === 5) return { suffix: "cm", native: true };
+  if (!(code > 0) || !INCHES_PER_UNIT[code]) {
+    return fallbackUnit === "mm" ? { suffix: "mm", native: true } : { suffix: "in", native: true };
+  }
+  return { suffix: "in", native: false, inchesPerUnit: INCHES_PER_UNIT[code] };
+}
+
+function svgDocument(paths, bounds, insunits, fallbackUnit) {
+  var minX = isFinite(bounds.minX) ? bounds.minX : 0;
+  var minY = isFinite(bounds.minY) ? bounds.minY : 0;
+  var maxX = isFinite(bounds.maxX) ? bounds.maxX : 0;
+  var maxY = isFinite(bounds.maxY) ? bounds.maxY : 0;
+  var spanX = maxX - minX;
+  var spanY = maxY - minY;
+  if (!(spanX > 0)) spanX = 1e-6;
+  if (!(spanY > 0)) spanY = 1e-6;
+  var spec = sizeSpec(insunits, fallbackUnit);
+  var widthNum = spec.native ? spanX : spanX * spec.inchesPerUnit;
+  var heightNum = spec.native ? spanY : spanY * spec.inchesPerUnit;
+  // Path Y is already flipped. The viewBox uses those coordinates; its width
+  // stays the DXF span so svgparser's unit ratio is unchanged.
+  var viewBox = [fmt(minX), fmt(-maxY), fmt(spanX), fmt(spanY)].join(" ");
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="' +
+    fmt(widthNum) +
+    spec.suffix +
+    '" height="' +
+    fmt(heightNum) +
+    spec.suffix +
+    '" viewBox="' +
+    viewBox +
+    '">' +
+    paths.join("") +
+    "</svg>"
+  );
 }
 
 module.exports = {

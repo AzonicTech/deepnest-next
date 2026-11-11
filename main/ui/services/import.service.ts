@@ -594,6 +594,10 @@ export class ImportService {
     }
   }
 
+  private drawingUnits(): "inch" | "mm" {
+    return this.config?.getSync("units") === "mm" ? "mm" : "inch";
+  }
+
   private onlineConverterEnabled(): boolean {
     return this.config?.getSync("useOnlineConverter") === true;
   }
@@ -613,7 +617,7 @@ export class ImportService {
       if (converted.copyError) {
         message("Imported the DWG, but could not save the DXF copy: " + converted.copyError, true);
       }
-      const svg = dxfToSvg(converted.dxf);
+      const svg = dxfToSvg(converted.dxf, { units: this.drawingUnits() });
       const scalingFactor = Number(this.config?.getSync("dxfImportScale")) || 1;
       this.processSvgData(svg, filename, null, scalingFactor, true);
       return "ok";
@@ -628,7 +632,7 @@ export class ImportService {
       return "File system is not available";
     }
     try {
-      const svg = dxfToSvg(this.fs.readFileSync(filePath));
+      const svg = dxfToSvg(this.fs.readFileSync(filePath), { units: this.drawingUnits() });
       const scalingFactor = Number(this.config?.getSync("dxfImportScale")) || 1;
       this.processSvgData(svg, filename, null, scalingFactor, true);
       return "ok";

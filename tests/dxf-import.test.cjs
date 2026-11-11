@@ -246,6 +246,78 @@ test("a conversion failure reports the status, not the uploaded bytes", () => {
   assert.equal(dumped.indexOf("100,101,102"), -1);
 });
 
+async function scaleApplied(svg, appScale, importScale) {
+  const { DOMParser } = require("@xmldom/xmldom");
+  function Parser() {}
+  Parser.prototype.parseFromString = function (markup, type) {
+    if (type === "text/html") return { documentElement: null };
+    const mime = type === "image/svg+xml" ? "text/xml" : type;
+    const doc = new DOMParser().parseFromString(markup, mime);
+    if (doc && !doc.firstElementChild) doc.firstElementChild = doc.documentElement;
+    return doc;
+  };
+  globalThis.DOMParser = Parser;
+  globalThis.document = {
+    implementation: {
+      createHTMLDocument: function () {
+        return { documentElement: {}, body: {} };
+      },
+    },
+  };
+  const mod = await import("../main/svgparser.js");
+  const parser = new mod.SvgParser();
+  const root = parser.load(null, svg, appScale, importScale);
+  const transform = root.getAttribute("transform") || "";
+  const match = /scale\(\s*([0-9eE.+-]+)\s*\)/.exec(transform);
+  assert.ok(match, "svgparser did not scale the drawing: " + transform);
+  return Number(match[1]);
+}
+
+test("an inch knife imports at about 7.9 in when the app scale is 96", async () => {
+  const knife = drawing(dxf([
+    "0", "LINE", "8", "0", "10", "1", "20", "0.25", "11", "8.9", "21", "0.25",
+    "0", "LINE", "8", "0", "10", "8.9", "20", "0.25", "11", "8.9", "21", "1.45",
+    "0", "LINE", "8", "0", "10", "8.9", "20", "1.45", "11", "1", "21", "1.45",
+    "0", "LINE", "8", "0", "10", "1", "20", "1.45", "11", "1", "21", "0.25",
+    "0", "ARC", "8", "0", "10", "5", "20", "0.85", "40", "0.4", "50", "0", "51", "180",
+  ]), 1);
+  const converted = convertDxf(knife, { units: "inch" });
+  roughly(converted.bounds.maxX - converted.bounds.minX, 7.9);
+  roughly(converted.bounds.maxY - converted.bounds.minY, 1.2);
+  assert.match(converted.svg, /width="7\.9in"/);
+  assert.match(converted.svg, /height="1\.2in"/);
+  assert.match(converted.svg, /viewBox="1 -1\.45 7\.9 1\.2"/);
+  const factor = await scaleApplied(converted.svg, 96, 1);
+  roughly((7.9 * factor) / 96, 7.9, 0.01);
+  roughly((1.2 * factor) / 96, 1.2, 0.01);
+});
+
+test("a millimetre DXF imports at its real size, and a unitless file follows the app units", async () => {
+  const mm = convertDxf(drawing(dxf([
+    "0", "LINE", "8", "0", "10", "0", "20", "0", "11", "200", "21", "0",
+    "0", "LINE", "8", "0", "10", "0", "20", "0", "11", "0", "21", "25.4",
+  ]), 4), { units: "inch" });
+  assert.match(mm.svg, /width="200mm"/);
+  assert.match(mm.svg, /height="25\.4mm"/);
+  const mmFactor = await scaleApplied(mm.svg, 96, 1);
+  roughly((200 * mmFactor) / 96, 200 / 25.4, 0.02);
+  roughly((25.4 * mmFactor) / 96, 1, 0.02);
+
+  const bare = dxf(["0", "SECTION", "2", "HEADER", "0", "ENDSEC"]) + entities(dxf([
+    "0", "LINE", "8", "0", "10", "0", "20", "0", "11", "10", "21", "0",
+  ]));
+  const asInch = convertDxf(bare, { units: "inch" });
+  const asMm = convertDxf(bare, { units: "mm" });
+  const unitless = convertDxf(drawing(dxf([
+    "0", "LINE", "8", "0", "10", "0", "20", "0", "11", "10", "21", "0",
+  ]), 0), { units: "inch" });
+  assert.match(asInch.svg, /width="10in"/);
+  assert.match(unitless.svg, /width="10in"/);
+  assert.match(asMm.svg, /width="10mm"/);
+  const mmFallback = await scaleApplied(asMm.svg, 96, 1);
+  roughly((10 * mmFallback) / 96, 10 / 25.4, 0.02);
+});
+
 function loadEngine() {
   const root = path.resolve(__dirname, "..");
   const context = {

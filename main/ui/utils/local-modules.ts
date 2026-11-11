@@ -29,9 +29,11 @@ function loadUtil(filename: string): unknown {
   throw lastError;
 }
 
-export function dxfToSvg(input: string | Buffer): string {
-  const api = loadUtil("dxf-to-svg.js") as { dxfToSvg: (value: string | Buffer) => string };
-  return api.dxfToSvg(input);
+export function dxfToSvg(input: string | Buffer, options?: { units?: string }): string {
+  const api = loadUtil("dxf-to-svg.js") as {
+    dxfToSvg: (value: string | Buffer, opts?: { units?: string }) => string;
+  };
+  return api.dxfToSvg(input, options);
 }
 
 export function readableConversionError(err: unknown): string {
