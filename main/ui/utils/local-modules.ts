@@ -40,3 +40,16 @@ export function readableConversionError(err: unknown): string {
   };
   return api.readableConversionError(err);
 }
+
+export function convertDwg(
+  dwgPath: string,
+  options?: { odaPath?: string }
+): Promise<{ ok: boolean; dxf?: Buffer; message?: string; code?: string }> {
+  const api = loadUtil("dwg-to-dxf.js") as {
+    convertDwg: (
+      file: string,
+      opts: { odaPath?: string }
+    ) => Promise<{ ok: boolean; dxf?: Buffer; message?: string; code?: string }>;
+  };
+  return api.convertDwg(dwgPath, options || {});
+}

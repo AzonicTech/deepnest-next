@@ -382,6 +382,16 @@
               <input type="checkbox" data-config="useOnlineConverter" />
             </dd>
 
+            <dt>ODA File Converter path</dt>
+            <dd>
+              <input
+                type="text"
+                value=""
+                placeholder="Leave blank to auto-detect"
+                data-config="odaFileConverterPath"
+              />
+            </dd>
+
             <dt>DXF import units</dt>
             <dd>
               <select name="dxfImportScale" data-config="dxfImportScale">
@@ -3449,10 +3459,20 @@
 
         <div class="config_explain" id="explain_useOnlineConverter">
           <h1>Online converter</h1>
-          DXF files are read on this computer. Leave this off and nesting works
-          with no internet. Turn it on only if a DXF cannot be read locally, or
-          if you still need DWG, PS, or EPS, which go to the conversion server.
-          A failed server request shows the status code, not the file you uploaded.
+          DXF files are read on this computer. DWG files are converted with the
+          ODA File Converter when it is installed. Leave this off and nesting
+          works with no internet. Turn it on only if a local read fails, or if
+          you still need PS or EPS, which go to the conversion server. A failed
+          server request shows the status code, not the file you uploaded.
+        </div>
+
+        <div class="config_explain" id="explain_odaFileConverterPath">
+          <h1>ODA File Converter path</h1>
+          DWG import runs the free ODA File Converter on this computer. Deepnest
+          does not include that program. Leave the path blank to look in
+          /usr/bin, /opt/ODAFileConverter, ~/Applications, and ~/Downloads. If
+          ODA is not installed and dwg2dxf is not on the PATH, import stops with
+          a short message unless the online converter is turned on.
         </div>
 
         <div class="config_explain" id="explain_plateauMinutes">

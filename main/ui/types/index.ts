@@ -44,6 +44,11 @@ export interface UIConfig extends DeepNestConfig {
    * or for DWG/PS/EPS. Off by default so the app works with no internet.
    */
   useOnlineConverter: boolean;
+  /**
+   * Path to the ODA File Converter executable. Empty means look in the
+   * usual Linux and Windows install locations, then LibreDWG's dwg2dxf.
+   */
+  odaFileConverterPath: string;
 }
 
 /**

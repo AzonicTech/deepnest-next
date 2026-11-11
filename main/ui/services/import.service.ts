@@ -13,7 +13,7 @@ import type {
 } from "../types/index.js";
 import { DEFAULT_CONVERSION_SERVER } from "../types/index.js";
 import { message } from "../utils/ui-helpers.js";
-import { dxfToSvg, readableConversionError } from "../utils/local-modules.js";
+import { convertDwg, dxfToSvg, readableConversionError } from "../utils/local-modules.js";
 
 /**
  * File filter options for the open dialog
@@ -368,6 +368,10 @@ export class ImportService {
     return extension.toLowerCase() === ".dxf";
   }
 
+  private isDwg(extension: string): boolean {
+    return extension.toLowerCase() === ".dwg";
+  }
+
   /**
    * Load files from the nest directory on startup
    * @returns Promise that resolves when all files are loaded
@@ -496,9 +500,18 @@ export class ImportService {
         message(local, true);
         return;
       }
+    } else if (this.isDwg(ext)) {
+      const local = await this.importDwgLocally(filePath, filename);
+      if (local === "ok") {
+        return;
+      }
+      if (!this.onlineConverterEnabled()) {
+        message(local, true);
+        return;
+      }
     } else if (!this.onlineConverterEnabled()) {
       message(
-        "This file needs the online converter, and that option is off. DXF files import on this computer with no internet.",
+        "This file needs the online converter, and that option is off. DXF and DWG files import on this computer with no internet.",
         true
       );
       return;
@@ -582,6 +595,23 @@ export class ImportService {
   /**
    * @returns "ok" when the drawing was imported, otherwise a short reason
    */
+  private async importDwgLocally(filePath: string, filename: string): Promise<"ok" | string> {
+    try {
+      const odaPath = String(this.config?.getSync("odaFileConverterPath") || "");
+      const converted = await convertDwg(filePath, { odaPath });
+      if (!converted.ok || !converted.dxf) {
+        return converted.message || "DWG needs the free ODA File Converter. Install it, then set its path in Settings.";
+      }
+      const svg = dxfToSvg(converted.dxf);
+      const scalingFactor = Number(this.config?.getSync("dxfImportScale")) || 1;
+      this.processSvgData(svg, filename, null, scalingFactor, true);
+      return "ok";
+    } catch (err) {
+      const error = err as { message?: string };
+      return error.message || "Could not read this DWG";
+    }
+  }
+
   private importDxfLocally(filePath: string, filename: string): "ok" | string {
     if (!this.fs) {
       return "File system is not available";
