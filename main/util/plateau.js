@@ -24,7 +24,7 @@
   var DEFAULTS = {
     enabled: true,
     plateauGenerations: 10, // 0 = ignore generation stall
-    plateauSeconds: 60, // 0 = ignore time stall
+    plateauMinutes: 1, // 0 = ignore time stall. Decimals allowed (0.5 = 30s).
     minGenerations: 1, // never auto-stop before this many completed generations
     epsilon: 1e-9, // fitness must beat best by more than this
   };
@@ -56,7 +56,8 @@
 
   function create(options) {
     var config = assign({}, DEFAULTS);
-    assign(config, options);
+    assign(config, migrateSavedConfig(options || {}));
+    delete config.plateauSeconds;
 
     var bestFitness = null;
     var generation = 0;
@@ -76,10 +77,11 @@
         generation: generation,
         generationsWithoutImprovement: staleGenerations,
         secondsWithoutImprovement: lastImprovementAt == null ? 0 : (now - lastImprovementAt) / 1000,
+        minutesWithoutImprovement: lastImprovementAt == null ? 0 : (now - lastImprovementAt) / 60000,
         bestFitness: bestFitness,
         enabled: !!config.enabled,
         plateauGenerations: config.plateauGenerations,
-        plateauSeconds: config.plateauSeconds,
+        plateauMinutes: config.plateauMinutes,
       };
     }
 
@@ -100,12 +102,12 @@
       }
 
       var genLimit = num(config.plateauGenerations, 0);
-      var secLimit = num(config.plateauSeconds, 0);
+      var minuteLimit = num(config.plateauMinutes, 0);
       var genHit = genLimit > 0 && staleGenerations >= genLimit;
       var timeHit =
-        secLimit > 0 &&
+        minuteLimit > 0 &&
         lastImprovementAt != null &&
-        (now - lastImprovementAt) / 1000 >= secLimit;
+        (now - lastImprovementAt) / 60000 >= minuteLimit;
 
       if (genHit || timeHit) {
         var reason = "plateau";
@@ -141,14 +143,16 @@
 
     return {
       configure: function (next) {
-        assign(config, next);
+        var incoming = migrateSavedConfig(next || {});
+        assign(config, incoming);
+        delete config.plateauSeconds;
         if (config.plateauGenerations !== undefined) {
           var gens = parseInt(config.plateauGenerations, 10);
           config.plateauGenerations = isNaN(gens) ? 0 : Math.max(0, gens);
         }
-        if (config.plateauSeconds !== undefined) {
-          var secs = parseInt(config.plateauSeconds, 10);
-          config.plateauSeconds = isNaN(secs) ? 0 : Math.max(0, secs);
+        if (config.plateauMinutes !== undefined) {
+          var mins = parseFloat(config.plateauMinutes);
+          config.plateauMinutes = isNaN(mins) ? 0 : Math.max(0, mins);
         }
         if (config.minGenerations !== undefined) {
           var minGens = parseInt(config.minGenerations, 10);
@@ -252,8 +256,13 @@
           (state.generationsWithoutImprovement === 1 ? " generation" : " generations"),
       );
     }
-    if (state.generation >= 1 && state.secondsWithoutImprovement >= 1) {
-      parts.push(Math.round(state.secondsWithoutImprovement) + "s without improvement");
+    var elapsedLabel = formatMinutes(
+      state.minutesWithoutImprovement != null
+        ? state.minutesWithoutImprovement
+        : (state.secondsWithoutImprovement || 0) / 60,
+    );
+    if (state.generation >= 1 && elapsedLabel) {
+      parts.push(elapsedLabel + " without improvement");
     }
     return parts.join(" · ");
   }
@@ -277,13 +286,48 @@
       );
     }
     if (state.reason === "time") {
+      var waited = formatMinutes(
+        state.minutesWithoutImprovement != null
+          ? state.minutesWithoutImprovement
+          : (state.secondsWithoutImprovement || 0) / 60,
+      );
       return (
         "Nesting stopped: no improvement for " +
-        Math.round(state.secondsWithoutImprovement) +
-        " seconds. Best layout is ready to export. Click Start nest to keep searching from this result."
+        (waited || "0 minutes") +
+        ". Best layout is ready to export. Click Start nest to keep searching from this result."
       );
     }
     return "Nesting stopped: search plateaued. Best layout is ready to export. Click Start nest to keep searching from this result.";
+  }
+
+  function formatMinutes(minutes) {
+    var value = Number(minutes);
+    if (!isFinite(value) || value < 0.05) return "";
+    var rounded = Math.round(value * 10) / 10;
+    if (rounded < 0.1) return "";
+    if (Math.abs(rounded - 1) < 0.05) return "1 minute";
+    var text = Math.abs(rounded - Math.round(rounded)) < 0.001 ? String(Math.round(rounded)) : rounded.toFixed(1);
+    return text + " minutes";
+  }
+
+  // Saved settings from before this field was minutes. 60 seconds becomes 1
+  // minute. A file that already has plateauMinutes is left alone, so a later
+  // read does not turn 1 minute into 1/60 minute.
+  function migrateSavedConfig(saved) {
+    if (!saved || typeof saved !== "object") return saved;
+    var next = {};
+    Object.keys(saved).forEach(function (key) {
+      if (key !== "plateauSeconds") next[key] = saved[key];
+    });
+    var hasMinutes = Object.prototype.hasOwnProperty.call(saved, "plateauMinutes");
+    var hasSeconds = Object.prototype.hasOwnProperty.call(saved, "plateauSeconds");
+    if (!hasMinutes && hasSeconds) {
+      var secs = Number(saved.plateauSeconds);
+      if (typeof secs === "number" && isFinite(secs) && secs >= 0) {
+        next.plateauMinutes = secs / 60;
+      }
+    }
+    return next;
   }
 
   return {
@@ -291,5 +335,7 @@
     defaults: DEFAULTS,
     formatStatus: formatStatus,
     formatStopMessage: formatStopMessage,
+    formatMinutes: formatMinutes,
+    migrateSavedConfig: migrateSavedConfig,
   };
 });

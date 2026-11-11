@@ -512,15 +512,15 @@
               />
             </dd>
 
-            <dt>Stop after seconds without improvement</dt>
+            <dt>Stop after minutes without improvement</dt>
             <dd>
               <input
                 type="number"
-                value="60"
-                step="1"
+                value="1"
+                step="any"
                 min="0"
-                max="3600"
-                data-config="plateauSeconds"
+                max="60"
+                data-config="plateauMinutes"
                 required
               />
             </dd>
@@ -3442,13 +3442,14 @@
           you click Stop.
         </div>
 
-        <div class="config_explain" id="explain_plateauSeconds">
-          <h1>Seconds without improvement</h1>
-          Stop if the best fitness does not improve for this many seconds. The
-          clock starts after the first full generation finishes, so a slow
-          first pass is not cut off. 60 seconds is a reasonable backstop when
-          generations are slow. Set to 0 to ignore elapsed time and only use
-          the generation limit.
+        <div class="config_explain" id="explain_plateauMinutes">
+          <h1>Minutes without improvement</h1>
+          Stop if the best fitness does not improve for this many minutes.
+          Decimals are allowed, so 0.5 is 30 seconds. The clock starts after
+          the first full generation finishes, so a slow first pass is not cut
+          off. 1 minute is the default. Set to 0 to ignore elapsed time and
+          only use the generation limit. An older saved setting in seconds is
+          converted once, so 60 seconds becomes 1 minute.
         </div>
       </div>
 

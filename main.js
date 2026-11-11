@@ -5,6 +5,7 @@ const path = require("path");
 const os = require("os");
 const url = require("url");
 const { loadPresets, savePreset, deletePreset } = require("./presets");
+const NestPlateau = require("./main/util/plateau.js");
 const NotificationService = require('./notification-service');
 require("events").EventEmitter.defaultMaxListeners = 30;
 
@@ -522,9 +523,17 @@ ipcMain.on("distribution-fit-result", function (event, payload) {
 // Backward compat with https://electron-settings.js.org/index.html#configure
 const configPath = path.resolve(app.getPath("userData"), "settings.json");
 ipcMain.handle("read-config", () => {
-  return fs.existsSync(configPath)
-    ? JSON.parse(fs.readFileSync(configPath).toString().replaceAll("http://convert.deepnest.io", "https://converter.deepnest.app/convert").replaceAll("https://convert.deepnest.io", "https://converter.deepnest.app/convert"))
-    : {};
+  if (!fs.existsSync(configPath)) return {};
+  const parsed = JSON.parse(
+    fs.readFileSync(configPath).toString()
+      .replaceAll("http://convert.deepnest.io", "https://converter.deepnest.app/convert")
+      .replaceAll("https://convert.deepnest.io", "https://converter.deepnest.app/convert")
+  );
+  const migrated = NestPlateau.migrateSavedConfig(parsed);
+  if (parsed && Object.prototype.hasOwnProperty.call(parsed, "plateauSeconds")) {
+    fs.writeFileSync(configPath, JSON.stringify(migrated));
+  }
+  return migrated;
 });
 ipcMain.handle("write-config", (event, stringifiedConfig) => {
   fs.writeFileSync(configPath, stringifiedConfig);

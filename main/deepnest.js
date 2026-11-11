@@ -29,7 +29,7 @@ var config = {
   // fire. 0 disables that limit. stopOnPlateau false runs until Stop.
   stopOnPlateau: true,
   plateauGenerations: 10,
-  plateauSeconds: 60,
+  plateauMinutes: 1,
 };
 
 export class DeepNest {
@@ -591,10 +591,16 @@ export class DeepNest {
       }
     }
 
-    if ("plateauSeconds" in c) {
-      var plateauSecs = parseInt(c.plateauSeconds, 10);
-      if (!isNaN(plateauSecs) && plateauSecs >= 0) {
-        config.plateauSeconds = plateauSecs;
+    if ("plateauMinutes" in c || "plateauSeconds" in c) {
+      var timeBag = {};
+      if ("plateauMinutes" in c) timeBag.plateauMinutes = c.plateauMinutes;
+      if ("plateauSeconds" in c) timeBag.plateauSeconds = c.plateauSeconds;
+      var migratedTime = NestPlateau.migrateSavedConfig(timeBag);
+      if (migratedTime && "plateauMinutes" in migratedTime) {
+        var plateauMins = parseFloat(migratedTime.plateauMinutes);
+        if (!isNaN(plateauMins) && plateauMins >= 0) {
+          config.plateauMinutes = plateauMins;
+        }
       }
     }
 
@@ -612,7 +618,7 @@ export class DeepNest {
       this.plateau.configure({
         enabled: !!config.stopOnPlateau,
         plateauGenerations: config.plateauGenerations,
-        plateauSeconds: config.plateauSeconds,
+        plateauMinutes: config.plateauMinutes,
         minGenerations: 1,
       });
       this.plateau.reset();
@@ -1202,7 +1208,7 @@ export class DeepNest {
     this.plateau.configure({
       enabled: !!config.stopOnPlateau,
       plateauGenerations: config.plateauGenerations,
-      plateauSeconds: config.plateauSeconds,
+      plateauMinutes: config.plateauMinutes,
       minGenerations: 1,
     });
     // A fresh search clears the stall clock. Restarting after an auto-stop

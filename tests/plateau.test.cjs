@@ -8,7 +8,7 @@ test("does not stop while fitness keeps improving", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 3,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
     minGenerations: 1,
   });
   p.reset(0);
@@ -25,7 +25,7 @@ test("stops after N generations without improvement", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 3,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
     minGenerations: 1,
   });
   p.reset(0);
@@ -47,7 +47,7 @@ test("tiny floating-point jitter does not count as improvement", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 2,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
     epsilon: 1e-9,
   });
   p.reset(0);
@@ -57,11 +57,11 @@ test("tiny floating-point jitter does not count as improvement", () => {
   assert.equal(stopped.stop, true);
 });
 
-test("stops after M seconds without improvement once a generation has finished", () => {
+test("stops after a fraction of a minute once a generation has finished", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 0,
-    plateauSeconds: 5,
+    plateauMinutes: 5 / 60,
     minGenerations: 1,
   });
   p.reset(1000);
@@ -78,7 +78,7 @@ test("time stop does not fire before the first generation completes", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 0,
-    plateauSeconds: 1,
+    plateauMinutes: 1 / 60,
     minGenerations: 1,
   });
   p.reset(0);
@@ -93,7 +93,7 @@ test("mid-generation improvement is not counted as a stale generation", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 2,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
   });
   p.reset(0);
   p.onResult(40, 0);
@@ -115,7 +115,7 @@ test("onResult resets the time clock when a better nest arrives mid-generation",
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 0,
-    plateauSeconds: 5,
+    plateauMinutes: 5 / 60,
     minGenerations: 1,
   });
   p.reset(0);
@@ -131,7 +131,7 @@ test("disabled detector never stops", () => {
   const p = NestPlateau.create({
     enabled: false,
     plateauGenerations: 1,
-    plateauSeconds: 1,
+    plateauMinutes: 1,
   });
   p.reset(0);
   p.onGeneration([1], 0);
@@ -143,7 +143,7 @@ test("zero limits mean manual stop only", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 0,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
   });
   p.reset(0);
   for (let i = 0; i < 50; i++) {
@@ -155,7 +155,7 @@ test("either limit can fire, and both together report plateau", () => {
   const gensOnly = NestPlateau.create({
     enabled: true,
     plateauGenerations: 1,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
   });
   gensOnly.reset(0);
   gensOnly.onGeneration([5], 0);
@@ -164,7 +164,7 @@ test("either limit can fire, and both together report plateau", () => {
   const timeOnly = NestPlateau.create({
     enabled: true,
     plateauGenerations: 0,
-    plateauSeconds: 5,
+    plateauMinutes: 5 / 60,
   });
   timeOnly.reset(0);
   timeOnly.onGeneration([5], 0);
@@ -173,7 +173,7 @@ test("either limit can fire, and both together report plateau", () => {
   const both = NestPlateau.create({
     enabled: true,
     plateauGenerations: 1,
-    plateauSeconds: 5,
+    plateauMinutes: 5 / 60,
   });
   both.reset(0);
   both.onGeneration([5], 0);
@@ -186,7 +186,7 @@ test("resume clears stall so a restarted nest does not immediately halt", () => 
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 1,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
   });
   p.reset(0);
   p.onGeneration([8], 0);
@@ -204,7 +204,7 @@ test("resume keeps the best result across a time-limit stop", () => {
   const p = NestPlateau.create({
     enabled: true,
     plateauGenerations: 0,
-    plateauSeconds: 10,
+    plateauMinutes: 10 / 60,
     minGenerations: 1,
   });
   p.reset(0);
@@ -228,7 +228,7 @@ test("enabled detector breaks the legacy infinite-generation loop", () => {
   const disabled = NestPlateau.create({
     enabled: false,
     plateauGenerations: 3,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
   });
   disabled.reset(0);
   let generations = 0;
@@ -243,7 +243,7 @@ test("enabled detector breaks the legacy infinite-generation loop", () => {
   const enabled = NestPlateau.create({
     enabled: true,
     plateauGenerations: 3,
-    plateauSeconds: 0,
+    plateauMinutes: 0,
   });
   enabled.reset(0);
   generations = 0;
@@ -257,6 +257,30 @@ test("enabled detector breaks the legacy infinite-generation loop", () => {
   }
   assert.equal(stopped, true);
   assert.equal(generations, 3);
+});
+
+test("saved seconds become minutes once, and a half minute is not truncated", () => {
+  const fromSeconds = NestPlateau.migrateSavedConfig({ plateauSeconds: 60, threads: 4 });
+  assert.equal(fromSeconds.plateauMinutes, 1);
+  assert.equal("plateauSeconds" in fromSeconds, false);
+  assert.equal(fromSeconds.threads, 4);
+
+  assert.equal(NestPlateau.migrateSavedConfig({ plateauSeconds: 0 }).plateauMinutes, 0);
+  assert.equal(NestPlateau.migrateSavedConfig({ plateauSeconds: 90 }).plateauMinutes, 1.5);
+  assert.equal(NestPlateau.migrateSavedConfig({ plateauSeconds: 30 }).plateauMinutes, 0.5);
+
+  const already = NestPlateau.migrateSavedConfig({ plateauMinutes: 2, plateauSeconds: 60 });
+  assert.equal(already.plateauMinutes, 2);
+  assert.equal("plateauSeconds" in already, false);
+
+  const half = NestPlateau.create({ enabled: true, plateauGenerations: 0, plateauMinutes: 0.5 });
+  half.reset(0);
+  half.onGeneration([3], 0);
+  assert.equal(half.evaluate(30 * 1000 - 1).stop, false);
+  const stopped = half.evaluate(30 * 1000);
+  assert.equal(stopped.stop, true);
+  assert.equal(stopped.reason, "time");
+  assert.match(NestPlateau.formatStopMessage(stopped), /0\.5 minutes/);
 });
 
 test("status text is human readable", () => {
@@ -275,4 +299,11 @@ test("status text is human readable", () => {
   });
   assert.ok(msg.indexOf("10 generations") !== -1);
   assert.ok(msg.indexOf("export") !== -1);
+
+  const timed = NestPlateau.formatStopMessage({
+    reason: "time",
+    minutesWithoutImprovement: 1,
+  });
+  assert.match(timed, /1 minute/);
+  assert.equal(timed.indexOf("seconds"), -1);
 });

@@ -38,7 +38,7 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
   simplify: false,
   stopOnPlateau: true,
   plateauGenerations: 10,
-  plateauSeconds: 60,
+  plateauMinutes: 1,
   dxfImportScale: 1,
   dxfExportScale: 1,
   endpointTolerance: 0.36,
@@ -93,7 +93,7 @@ export class ConfigService implements ConfigObject {
   mutationRate: number;
   stopOnPlateau: boolean;
   plateauGenerations: number;
-  plateauSeconds: number;
+  plateauMinutes: number;
   placementType: PlacementType;
   mergeLines: boolean;
   timeRatio: number;
@@ -132,7 +132,7 @@ export class ConfigService implements ConfigObject {
     this.mutationRate = this.config.mutationRate;
     this.stopOnPlateau = this.config.stopOnPlateau;
     this.plateauGenerations = this.config.plateauGenerations;
-    this.plateauSeconds = this.config.plateauSeconds;
+    this.plateauMinutes = this.config.plateauMinutes;
     this.placementType = this.config.placementType;
     this.mergeLines = this.config.mergeLines;
     this.timeRatio = this.config.timeRatio;
@@ -182,10 +182,15 @@ export class ConfigService implements ConfigObject {
    * @param savedConfig - Configuration object to merge
    */
   private mergeConfig(savedConfig: Partial<UIConfig>): void {
-    for (const key in savedConfig) {
-      if (Object.prototype.hasOwnProperty.call(savedConfig, key)) {
+    const plateau = (
+      globalThis as { NestPlateau?: { migrateSavedConfig?: (saved: Partial<UIConfig>) => Partial<UIConfig> } }
+    ).NestPlateau;
+    const migrated =
+      plateau && plateau.migrateSavedConfig ? plateau.migrateSavedConfig(savedConfig) : savedConfig;
+    for (const key in migrated) {
+      if (Object.prototype.hasOwnProperty.call(migrated, key)) {
         const typedKey = key as keyof UIConfig;
-        const value = savedConfig[typedKey];
+        const value = migrated[typedKey];
         if (value !== undefined) {
           this.setConfigValue(typedKey, value);
         }
@@ -220,7 +225,7 @@ export class ConfigService implements ConfigObject {
     this.mutationRate = this.config.mutationRate;
     this.stopOnPlateau = this.config.stopOnPlateau;
     this.plateauGenerations = this.config.plateauGenerations;
-    this.plateauSeconds = this.config.plateauSeconds;
+    this.plateauMinutes = this.config.plateauMinutes;
     this.placementType = this.config.placementType;
     this.mergeLines = this.config.mergeLines;
     this.timeRatio = this.config.timeRatio;

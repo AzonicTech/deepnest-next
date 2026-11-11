@@ -68,10 +68,11 @@ export type DeepNestConfig = {
    */
   plateauGenerations: number;
   /**
-   * Stop after this many seconds with no fitness improvement, measured
-   * from the end of the first full generation. 0 disables the time limit.
+   * Stop after this many minutes with no fitness improvement, measured
+   * from the end of the first full generation. Decimals are allowed.
+   * 0 disables the time limit.
    */
-  plateauSeconds: number;
+  plateauMinutes: number;
   /** Scale factor for DXF import */
   dxfImportScale: number;
   /** Scale factor for DXF export */
