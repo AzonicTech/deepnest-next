@@ -148,6 +148,7 @@ interface FitResult {
   rotationByIndex: Record<string, number>;
   hint: string;
   totalParts: number;
+  level?: number;
 }
 
 type DistributionPrep =
@@ -539,6 +540,8 @@ export class PartsViewService {
    */
   prepareForNest(): DistributionPrep {
     const state = this.readDistribution();
+    if (this.deepNest.clearMaxOut) this.deepNest.clearMaxOut();
+
     if (!state.use) {
       this.deepNest.compactPlacement = false;
       this.deepNest.distributionSeed = null;
@@ -600,6 +603,14 @@ export class PartsViewService {
           "maxout|" + (state.even ? "even" : "percent") + "|" + result.quantities.join(",")
         );
         this.setHint(result.hint);
+        if (this.deepNest.armMaxOut) {
+          this.deepNest.armMaxOut({
+            even: state.even,
+            startLevel: result.level || 0,
+            rotations: this.rotationCount(),
+            items: shapes,
+          });
+        }
         if (this.ractive) this.ractive.update("parts");
       },
     };

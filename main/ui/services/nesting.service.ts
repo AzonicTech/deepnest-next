@@ -47,6 +47,7 @@ interface FitSuccess {
   rotationByIndex: Record<string, number>;
   hint: string;
   totalParts: number;
+  level?: number;
 }
 
 type DistributionPrep =

@@ -8,7 +8,7 @@ import { HullPolygon } from '../build/util/HullPolygon.js';
 
 const { simplifyPolygon: simplifyPoly } = require("@deepnest/svg-preprocessor");
 const NestPlateau = require("./util/plateau.js");
-require("./util/distribution.js");
+const NestDistribution = require("./util/distribution.js");
 require("./util/export-geometry.js");
 
 var config = {
@@ -71,6 +71,11 @@ export class DeepNest {
     this.compactPlacement = false;
     // Order and rotations that are already known to fit, used to seed the GA.
     this.distributionSeed = null;
+    // Max-out keeps adding a set after each full placement until one does not fit.
+    this.maxOut = null;
+    this.maxOutLead = "";
+    this._workerParts = null;
+    this._maxOutStepping = false;
     // When this changes, the current population is for a different mix.
     this.distributionSignature = null;
     this.bindResponseListener();
@@ -1169,7 +1174,228 @@ export class DeepNest {
       this.cachedSheets = null;
       this.generationReported = false;
       this.distributionSignature = signature;
+      this.clearMaxOut();
     }
+  };
+
+  clearMaxOut() {
+    this.maxOut = null;
+    this.maxOutLead = "";
+  };
+
+  armMaxOut(spec) {
+    if (!spec || !(spec.startLevel > 0)) {
+      this.clearMaxOut();
+      return;
+    }
+    var plan = NestDistribution.maxOutSearch({
+      even: spec.even !== false,
+      rotations: spec.rotations,
+      items: spec.items || [],
+    });
+    var runner = NestDistribution.createMaxOutEscalation(plan, { startLevel: spec.startLevel });
+    var first = runner.begin();
+    if (!first || first.action !== "try") {
+      this.clearMaxOut();
+      return;
+    }
+    this.maxOut = {
+      active: true,
+      runner: runner,
+      rotationByIndex: plan.rotationByIndex || {},
+      fullNest: null,
+      lastOrder: null,
+      lastCounts: null,
+    };
+    this.maxOutLead = first.status;
+  };
+
+  currentPartQuantities() {
+    return this.parts.map(function (part) {
+      return part.sheet ? 0 : part.quantity;
+    });
+  };
+
+  writePartQuantities(quantities) {
+    if (!quantities) return;
+    for (var i = 0; i < this.parts.length && i < quantities.length; i++) {
+      if (this.parts[i].sheet) continue;
+      if (typeof quantities[i] === "number") this.parts[i].quantity = quantities[i];
+    }
+  };
+
+  placedInNest(nest) {
+    var count = 0;
+    var placements = (nest && nest.placements) || [];
+    for (var i = 0; i < placements.length; i++) {
+      count += (placements[i].sheetplacements || []).length;
+    }
+    return count;
+  };
+
+  expectedPartCount() {
+    var total = 0;
+    for (var i = 0; i < this.parts.length; i++) {
+      if (!this.parts[i].sheet) total += this.parts[i].quantity || 0;
+    }
+    return total;
+  };
+
+  allPartsPlaced() {
+    var expected = this.expectedPartCount();
+    if (!(expected > 0) || !this.nests.length) return false;
+    return this.placedInNest(this.nests[0]) >= expected;
+  };
+
+  captureBestOrder() {
+    if (!this.GA || !this.GA.population) return null;
+    var best = null;
+    for (var i = 0; i < this.GA.population.length; i++) {
+      var individual = this.GA.population[i];
+      if (typeof individual.fitness !== "number" || !isFinite(individual.fitness)) continue;
+      if (!best || individual.fitness < best.fitness) best = individual;
+    }
+    if (!best || !best.placement) return null;
+    return best.placement.map(function (poly) {
+      return poly.source;
+    });
+  };
+
+  extendPlacementOrder(order, oldCounts, newCounts) {
+    if (!order || !oldCounts || !newCounts) return null;
+    var seq = order.slice();
+    for (var i = 0; i < newCounts.length; i++) {
+      var extra = Math.floor(newCounts[i] || 0) - Math.floor(oldCounts[i] || 0);
+      for (var n = 0; n < extra; n++) seq.push(i);
+    }
+    return seq;
+  };
+
+  publishNestStatus(plateauText) {
+    var lead = this.maxOutLead || "";
+    var next = lead && plateauText ? lead + " · " + plateauText : lead || plateauText || "";
+    if (next === this.nestStatus) return false;
+    this.nestStatus = next;
+    return true;
+  };
+
+  pauseWorkers() {
+    this.working = false;
+    if (this.GA && this.GA.population && this.GA.population.length > 0) {
+      this.GA.population.forEach(function (individual) {
+        individual.processing = false;
+      });
+    }
+    if (this.workerTimer) {
+      clearInterval(this.workerTimer);
+      this.workerTimer = null;
+    }
+    if (this.eventEmitter) {
+      this.eventEmitter.send("background-stop");
+    }
+  };
+
+  ensureWorkerTimer() {
+    var self = this;
+    if (this.workerTimer) return;
+    this.workerTimer = setInterval(function () {
+      if (!self.working) return;
+      self.launchWorkers.call(
+        self,
+        self._workerParts,
+        config,
+        self.progressCallback,
+        self.displayCallback
+      );
+    }, 100);
+  };
+
+  // True when max-out started another quantity instead of ending the nest.
+  advanceMaxOut() {
+    if (!this.maxOut || !this.maxOut.active) return false;
+    var countsBefore = this.currentPartQuantities();
+    var orderBefore = this.captureBestOrder();
+    var complete = this.allPartsPlaced();
+    var snapshot = null;
+    if (complete && this.nests[0]) {
+      try {
+        snapshot = JSON.parse(JSON.stringify(this.nests[0]));
+        snapshot.selected = true;
+      } catch (err) {
+        snapshot = this.nests[0];
+        snapshot.selected = true;
+      }
+    }
+    var step = this.maxOut.runner.onResult(complete);
+    if (complete && snapshot) {
+      this.maxOut.fullNest = snapshot;
+      this.maxOut.lastOrder = orderBefore;
+      this.maxOut.lastCounts = countsBefore;
+    }
+    if (!step || step.action === "done") {
+      this.finishMaxOut(step);
+      return false;
+    }
+    this.beginMaxOutLevel(step);
+    return true;
+  };
+
+  beginMaxOutLevel(step) {
+    this._maxOutStepping = true;
+    this.pauseWorkers();
+    this._maxOutStepping = false;
+    this.writePartQuantities(step.quantities);
+    var sequence = step.sequence;
+    if (this.maxOut.lastOrder && this.maxOut.lastCounts) {
+      var extended = this.extendPlacementOrder(this.maxOut.lastOrder, this.maxOut.lastCounts, step.quantities);
+      if (extended && extended.length) sequence = extended;
+    }
+    this.distributionSeed = {
+      sequence: sequence,
+      rotationBySource: this.maxOut.rotationByIndex,
+    };
+    this.GA = null;
+    this.cachedSheets = null;
+    this.generationReported = false;
+    this.nests = [];
+    this.nestResultDirty = true;
+    if (this.plateau) this.plateau.reset();
+    this.maxOutLead = step.status;
+    this.publishNestStatus("");
+    this._workerParts = this.buildWorkingCopies();
+    this.working = true;
+    this.ensureWorkerTimer();
+    if (this.displayCallback) this.displayCallback();
+  };
+
+  finishMaxOut(step) {
+    if (!this.maxOut) return;
+    if (step && step.quantities && !step.keepCurrent) {
+      this.writePartQuantities(step.quantities);
+    }
+    var currentIsFullWinner =
+      step &&
+      !step.keepCurrent &&
+      step.totalParts > 0 &&
+      this.expectedPartCount() === step.totalParts &&
+      this.allPartsPlaced();
+    if (step && !step.keepCurrent && this.maxOut.fullNest && !currentIsFullWinner) {
+      this.nests = [this.maxOut.fullNest];
+      this.nests[0].selected = true;
+      this.nestResultDirty = true;
+    }
+    this.GA = null;
+    this.maxOutLead = step && step.status ? step.status : this.maxOutLead;
+    this.maxOut.active = false;
+    this.nestStatus = this.maxOutLead;
+  };
+
+  finishMaxOutFromUser() {
+    if (!this.maxOut || !this.maxOut.active) return;
+    if (this.allPartsPlaced()) this.maxOut.runner.noteFit();
+    var done = this.maxOut.runner.stop();
+    this.finishMaxOut(done);
+    if (this.displayCallback) this.displayCallback();
   };
 
   cloneTree(tree) {
@@ -1198,8 +1424,7 @@ export class DeepNest {
     this.doneCallback = done || null;
     this.cachedSheets = null;
 
-    var parts = this.buildWorkingCopies();
-    var self = this;
+    this._workerParts = this.buildWorkingCopies();
     this.working = true;
 
     if (!this.plateau) {
@@ -1219,26 +1444,13 @@ export class DeepNest {
     } else {
       this.plateau.resume();
     }
-    this.nestStatus = this.plateau.statusText();
+    this.publishNestStatus(this.plateau.statusText());
 
     if (this.eventEmitter) {
       this.eventEmitter.send("background-set-threads", config.threads);
     }
 
-    if (!this.workerTimer) {
-      this.workerTimer = setInterval(function () {
-        if (!self.working) {
-          return;
-        }
-        self.launchWorkers.call(
-          self,
-          parts,
-          config,
-          self.progressCallback,
-          self.displayCallback
-        );
-      }, 100);
-    }
+    this.ensureWorkerTimer();
   };
 
   bindResponseListener() {
@@ -1276,7 +1488,7 @@ export class DeepNest {
 
     if (this.plateau) {
       var decision = this.plateau.onResult(payload.fitness);
-      this.nestStatus = this.plateau.statusText();
+      this.publishNestStatus(this.plateau.statusText());
       if (decision && decision.stop && this.working) {
         var stillWorking = this.GA.population.some(function (ind) {
           return !!ind.processing;
@@ -1367,7 +1579,7 @@ export class DeepNest {
     }
     this.generationReported = true;
     var decision = this.plateau.onGeneration(generationFitness);
-    this.nestStatus = this.plateau.statusText();
+    this.publishNestStatus(this.plateau.statusText());
     return decision;
   };
 
@@ -1375,11 +1587,14 @@ export class DeepNest {
     if (!this.working) {
       return;
     }
+    if (this.advanceMaxOut()) {
+      return;
+    }
     this.stop();
     if (this.eventEmitter) {
       this.eventEmitter.send("background-stop");
     }
-    this.nestStatus = NestPlateau.formatStopMessage(decision);
+    this.nestStatus = this.maxOutLead || NestPlateau.formatStopMessage(decision);
     if (this.displayCallback) {
       this.displayCallback();
     }
@@ -1506,8 +1721,7 @@ export class DeepNest {
     if (this.plateau) {
       var timeDecision = this.plateau.evaluate();
       var nextStatus = this.plateau.statusText();
-      if (nextStatus !== this.nestStatus) {
-        this.nestStatus = nextStatus;
+      if (this.publishNestStatus(nextStatus)) {
         if (displayCallback) {
           displayCallback();
         }
@@ -1787,6 +2001,9 @@ export class DeepNest {
   };
 
   stop() {
+    if (this.maxOut && this.maxOut.active && !this._maxOutStepping) {
+      this.finishMaxOutFromUser();
+    }
     this.working = false;
     if (this.GA && this.GA.population && this.GA.population.length > 0) {
       this.GA.population.forEach(function (i) {
@@ -1808,6 +2025,7 @@ export class DeepNest {
       this.plateau.reset();
     }
     this.nestStatus = "";
+    this.clearMaxOut();
     this.compactPlacement = false;
     this.distributionSeed = null;
     this.distributionSignature = null;

@@ -187,3 +187,108 @@ test("search is monotonic and respects the minimum level", () => {
     0
   );
 });
+
+function threeDesigns() {
+  return [
+    sheet(1000, 1000),
+    part("chef", 2, 2),
+    part("utility", 2, 2),
+    part("paring", 2, 2),
+  ];
+}
+
+function play(run, fits) {
+  let step = run.begin();
+  let guard = 0;
+  while (step.action === "try" && guard < 40) {
+    step = run.onResult(fits(step.level));
+    guard++;
+  }
+  return step;
+}
+
+test("max out adds one set after a full fit and keeps the last one that fit", () => {
+  const plan = Distribution.maxOutSearch({
+    even: true,
+    rotations: 1,
+    items: threeDesigns(),
+  });
+  const run = Distribution.createMaxOutEscalation(plan, { startLevel: 10 });
+  const first = run.begin();
+  assert.equal(first.level, 10);
+  assert.equal(first.totalParts, 30);
+  assert.equal(first.status, "Trying 10 of each (30 parts)...");
+
+  const done = play(run, (level) => level <= 12);
+  assert.equal(done.action, "done");
+  assert.equal(done.level, 12);
+  assert.deepEqual(done.quantities.slice(1), [12, 12, 12]);
+  assert.equal(done.totalParts, 36);
+  assert.equal(done.status, "Final: 12 of each (36 parts) - 13 would not fit");
+});
+
+test("max out percent steps to the next total and stops before the count that does not fit", () => {
+  const plan = Distribution.maxOutSearch({
+    even: false,
+    rotations: 1,
+    items: [
+      sheet(1000, 1000),
+      part("chef", 2, 2, 50),
+      part("utility", 2, 2, 30),
+      part("paring", 2, 2, 20),
+    ],
+  });
+  const run = Distribution.createMaxOutEscalation(plan, { startLevel: 10 });
+  const first = run.begin();
+  assert.equal(first.totalParts, 10);
+  assert.match(first.status, /^Trying 10 parts/);
+  const done = play(run, (level) => level <= 10);
+  assert.equal(done.level, 10);
+  assert.equal(done.failedLevel, 11);
+  assert.match(done.status, /Final: 10 parts/);
+  assert.match(done.status, /11 would not fit/);
+});
+
+test("stopping max out keeps the last full set, not the one still being tried", () => {
+  const plan = Distribution.maxOutSearch({
+    even: true,
+    rotations: 1,
+    items: threeDesigns(),
+  });
+  const run = Distribution.createMaxOutEscalation(plan, { startLevel: 10 });
+  run.begin();
+  const next = run.onResult(true);
+  assert.equal(next.level, 11);
+  const stopped = run.stop();
+  assert.equal(stopped.level, 10);
+  assert.equal(stopped.totalParts, 30);
+  assert.equal(stopped.keepCurrent, false);
+  assert.match(stopped.status, /Final: 10 of each \(30 parts\)/);
+});
+
+test("a full placement in progress is kept when stop is asked before the next step", () => {
+  const plan = Distribution.maxOutSearch({
+    even: true,
+    rotations: 1,
+    items: threeDesigns(),
+  });
+  const run = Distribution.createMaxOutEscalation(plan, { startLevel: 4 });
+  run.begin();
+  run.noteFit();
+  const stopped = run.stop();
+  assert.equal(stopped.level, 4);
+  assert.equal(stopped.totalParts, 12);
+});
+
+test("a start that is too high walks down to the largest count that fits", () => {
+  const plan = Distribution.maxOutSearch({
+    even: true,
+    rotations: 1,
+    items: threeDesigns(),
+  });
+  const run = Distribution.createMaxOutEscalation(plan, { startLevel: 8 });
+  const done = play(run, (level) => level <= 3);
+  assert.equal(done.level, 3);
+  assert.equal(done.totalParts, 9);
+  assert.match(done.status, /3 of each/);
+});

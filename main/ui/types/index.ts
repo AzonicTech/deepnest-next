@@ -156,6 +156,14 @@ export interface DeepNestInstance {
   distributionSeed: { sequence: number[]; rotationBySource: Record<string, number> } | null;
   /** Drop the current population when the mix changes */
   noteDistribution(signature: string | null): void;
+  /** Max-out adds another set after each full placement until one does not fit */
+  armMaxOut?(spec: {
+    even: boolean;
+    startLevel: number;
+    rotations: number;
+    items: unknown[];
+  }): void;
+  clearMaxOut?(): void;
   /** Offset part and sheet polygons, for a fit measurement */
   nestShapes(): Array<Record<string, unknown>>;
   /** Placement settings the background worker should use */

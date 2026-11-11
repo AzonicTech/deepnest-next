@@ -629,7 +629,7 @@
         return (
           "Bounding-box guess: about " +
           areaGuess +
-          " of each. Start nest measures how many whole sets actually fit, and will not add an extra of one design."
+          " of each. Nesting starts from a count that fits, then adds one more of each design whenever every part is placed and the search levels off."
         );
       }
       return "Start nest places as many parts as fit while staying as close as possible to these percentages. It will not add extras past the mix.";
@@ -736,6 +736,134 @@
     };
   }
 
+  function tryingStatus(plan, level, quantities, total) {
+    if (plan.even) {
+      return "Trying " + level + " of each (" + total + " parts)...";
+    }
+    return "Trying " + total + " parts (" + listSplit(plan.items, quantities) + ")...";
+  }
+
+  function finalStatus(plan, level, quantities, total, failedLevel, reason) {
+    if (!(level > 0)) {
+      return "Final: nothing from this mix fit on the sheets.";
+    }
+    var head = plan.even
+      ? "Final: " + level + " of each (" + total + " parts)"
+      : "Final: " + total + " parts (" + listSplit(plan.items, quantities) + ")";
+    if (reason === "overflow" && failedLevel) {
+      if (plan.even) {
+        head += " - " + failedLevel + " would not fit";
+      } else {
+        var failedCounts = plan.countsForLevel(failedLevel);
+        head += " - " + sumCounts(failedCounts, plan.items) + " would not fit";
+      }
+    }
+    return head;
+  }
+
+  // Max-out only. Starts at a count that is worth trying, then steps up after
+  // a full placement. A step that does not place everything ends the search
+  // on the largest count that did.
+  function createMaxOutEscalation(plan, options) {
+    var minLevel = Math.max(1, Math.floor(num(plan && plan.minLevel, 1)));
+    var ceiling = Math.floor(num(plan && plan.ceiling, 0));
+    var start = Math.floor(num(options && options.startLevel, 0));
+    if (!(start >= minLevel)) {
+      var guess = Math.floor(num(plan && plan.areaGuess, 0));
+      start = guess >= minLevel ? guess : minLevel;
+    }
+    if (ceiling > 0 && start > ceiling) start = ceiling;
+    if (!(start > 0) || !plan || typeof plan.countsForLevel !== "function") start = 0;
+
+    var trying = start;
+    var bestFull = null;
+    var highFail = null;
+    var finished = null;
+
+    function pack(level) {
+      var quantities = plan.countsForLevel(level);
+      var total = sumCounts(quantities, plan.items);
+      return {
+        action: "try",
+        level: level,
+        quantities: quantities,
+        totalParts: total,
+        sequence: sequenceFromQuantities(quantities, plan.items),
+        status: tryingStatus(plan, level, quantities, total),
+      };
+    }
+
+    function done(reason) {
+      var level = bestFull == null ? 0 : bestFull;
+      var quantities = plan.countsForLevel(level > 0 ? level : 0);
+      var total = sumCounts(quantities, plan.items);
+      var keepCurrent = reason === "stopped" && !(bestFull > 0);
+      if (keepCurrent) {
+        level = trying;
+        quantities = plan.countsForLevel(trying > 0 ? trying : 0);
+        total = sumCounts(quantities, plan.items);
+      }
+      finished = {
+        action: "done",
+        reason: reason,
+        level: keepCurrent ? 0 : level,
+        quantities: quantities,
+        totalParts: total,
+        failedLevel: reason === "overflow" ? highFail : null,
+        keepCurrent: keepCurrent,
+        status: keepCurrent
+          ? "Stopped while trying " +
+            (plan.even ? trying + " of each (" + total + " parts)" : total + " parts") +
+            "."
+          : finalStatus(plan, level, quantities, total, reason === "overflow" ? highFail : null, reason),
+      };
+      return finished;
+    }
+
+    return {
+      begin: function () {
+        if (finished) return finished;
+        if (!(trying > 0)) return done("none");
+        return pack(trying);
+      },
+      onResult: function (allPlaced) {
+        if (finished) return finished;
+        if (allPlaced) {
+          bestFull = trying;
+          var upper = highFail == null ? (ceiling > 0 ? ceiling + 1 : trying + 2) : highFail;
+          if (ceiling > 0) upper = Math.min(upper, ceiling + 1);
+          if (bestFull + 1 >= upper) {
+            return done(highFail == null ? "ceiling" : "overflow");
+          }
+          var next = bestFull + 1;
+          if (highFail != null) {
+            var jump = Math.floor((highFail - bestFull) / 2);
+            if (jump < 1) jump = 1;
+            next = bestFull + jump;
+            if (next >= highFail) return done("overflow");
+          }
+          trying = next;
+          return pack(trying);
+        }
+        if (highFail == null || trying < highFail) highFail = trying;
+        if (bestFull != null) return done("overflow");
+        if (trying <= minLevel) return done("none");
+        var nextDown = Math.floor(trying / 2);
+        if (nextDown < minLevel) nextDown = trying - 1;
+        if (!(nextDown >= minLevel) || nextDown >= trying) return done("none");
+        trying = nextDown;
+        return pack(trying);
+      },
+      noteFit: function () {
+        if (!finished && trying > 0) bestFull = trying;
+      },
+      stop: function () {
+        if (finished) return finished;
+        return done("stopped");
+      },
+    };
+  }
+
   function round1(value) {
     return Math.round(value * 10) / 10;
   }
@@ -753,5 +881,6 @@
     maxOutSearch: maxOutSearch,
     searchMaxLevel: searchMaxLevel,
     runMaxOut: runMaxOut,
+    createMaxOutEscalation: createMaxOutEscalation,
   };
 });
