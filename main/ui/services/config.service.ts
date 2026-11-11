@@ -26,6 +26,7 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
   scale: 72, // actual stored value will be in units/inch
   spacing: 0,
   curveTolerance: 0.72, // store distances in native units
+  exportCurveTolerance: 0.36, // 0.005 inch at 72 SVG units/inch
   clipperScale: 10000000,
   rotations: 4,
   threads: 4,
@@ -84,6 +85,7 @@ export class ConfigService implements ConfigObject {
   scale: number;
   spacing: number;
   curveTolerance: number;
+  exportCurveTolerance: number;
   clipperScale: number;
   rotations: number;
   threads: number;
@@ -122,6 +124,7 @@ export class ConfigService implements ConfigObject {
     this.scale = this.config.scale;
     this.spacing = this.config.spacing;
     this.curveTolerance = this.config.curveTolerance;
+    this.exportCurveTolerance = this.config.exportCurveTolerance;
     this.clipperScale = this.config.clipperScale;
     this.rotations = this.config.rotations;
     this.threads = this.config.threads;
@@ -209,6 +212,7 @@ export class ConfigService implements ConfigObject {
     this.scale = this.config.scale;
     this.spacing = this.config.spacing;
     this.curveTolerance = this.config.curveTolerance;
+    this.exportCurveTolerance = this.config.exportCurveTolerance;
     this.clipperScale = this.config.clipperScale;
     this.rotations = this.config.rotations;
     this.threads = this.config.threads;

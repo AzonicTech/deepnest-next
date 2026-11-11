@@ -52,6 +52,12 @@ export type DeepNestConfig = {
   /** Enable polygon simplification */
   simplify: boolean;
   /**
+   * How far an exported cut path may move from the source, in SVG units
+   * (same storage as curve tolerance). 0 keeps every polyline vertex.
+   * Real arcs and beziers are kept as curves either way.
+   */
+  exportCurveTolerance: number;
+  /**
    * Stop the genetic search when the best layout stops improving.
    * Uncheck to run until Stop is clicked.
    */

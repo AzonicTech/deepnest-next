@@ -281,6 +281,20 @@
               <i><span class="unit-label">inch</span></i>
             </dd>
 
+            <dt>Export curve tolerance</dt>
+            <dd>
+              <input
+                type="number"
+                value="0.005"
+                min="0"
+                step="any"
+                data-config="exportCurveTolerance"
+                data-conversion="true"
+                required
+              />
+              <i><span class="unit-label">inch</span></i>
+            </dd>
+
             <dt>Part rotations</dt>
             <dd>
               <input
@@ -1052,6 +1066,14 @@
           segments. Curve tolerance is the maximum acceptable error when
           performing this approximation. Set to a higher value to speed up the
           nesting process, and a lower value when more precision is required.
+        </div>
+
+        <div class="config_explain" id="explain_exportCurveTolerance">
+          <h1>Export curve tolerance</h1>
+          How far a cut path may stray from the design when the file is only
+          line segments, in the same units as the sheet. 0.005 inch is a tight
+          shop default. 0 keeps every vertex. Real arcs and beziers are written
+          as curves either way, so a smooth edge does not become a saw tooth.
         </div>
 
         <div class="config_explain" id="explain_endpointTolerance">

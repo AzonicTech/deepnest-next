@@ -9,6 +9,7 @@ import { HullPolygon } from '../build/util/HullPolygon.js';
 const { simplifyPolygon: simplifyPoly } = require("@deepnest/svg-preprocessor");
 const NestPlateau = require("./util/plateau.js");
 require("./util/distribution.js");
+require("./util/export-geometry.js");
 
 var config = {
   clipperScale: 10000000,
