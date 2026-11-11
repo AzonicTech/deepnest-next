@@ -377,6 +377,11 @@
               <i><span class="unit-label">inch</span></i>
             </dd>
 
+            <dt>Use online converter if local conversion fails</dt>
+            <dd>
+              <input type="checkbox" data-config="useOnlineConverter" />
+            </dd>
+
             <dt>DXF import units</dt>
             <dd>
               <select name="dxfImportScale" data-config="dxfImportScale">
@@ -3440,6 +3445,14 @@
           solid default for shop work. Set to 0 to ignore the generation count
           and only use the time limit. If both limits are 0, nesting runs until
           you click Stop.
+        </div>
+
+        <div class="config_explain" id="explain_useOnlineConverter">
+          <h1>Online converter</h1>
+          DXF files are read on this computer. Leave this off and nesting works
+          with no internet. Turn it on only if a DXF cannot be read locally, or
+          if you still need DWG, PS, or EPS, which go to the conversion server.
+          A failed server request shows the status code, not the file you uploaded.
         </div>
 
         <div class="config_explain" id="explain_plateauMinutes">

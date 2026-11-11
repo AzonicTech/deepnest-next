@@ -13,6 +13,7 @@ import type {
 } from "../types/index.js";
 import { DEFAULT_CONVERSION_SERVER } from "../types/index.js";
 import { message } from "../utils/ui-helpers.js";
+import { dxfToSvg, readableConversionError } from "../utils/local-modules.js";
 
 /**
  * File filter options for the open dialog
@@ -478,16 +479,31 @@ export class ImportService {
   }
 
   /**
-   * Convert a non-SVG file to SVG using the conversion server
-   * @param filePath - Full path to the file
-   * @param filename - Base filename
-   * @param ext - File extension
+   * DXF is converted on this computer. The online converter is used only when
+   * that setting is on, and only if local conversion fails or the file is not DXF.
    */
   private async convertAndImport(
     filePath: string,
     filename: string,
     ext: string
   ): Promise<void> {
+    if (this.isDxf(ext)) {
+      const local = this.importDxfLocally(filePath, filename);
+      if (local === "ok") {
+        return;
+      }
+      if (!this.onlineConverterEnabled()) {
+        message(local, true);
+        return;
+      }
+    } else if (!this.onlineConverterEnabled()) {
+      message(
+        "This file needs the online converter, and that option is off. DXF files import on this computer with no internet.",
+        true
+      );
+      return;
+    }
+
     if (!this.fs || !this.httpClient || !this.FormData) {
       message("Required modules not available for conversion", true);
       return;
@@ -554,11 +570,30 @@ export class ImportService {
           true
         );
       } else {
-        message(
-          `Could not contact file conversion server: ${JSON.stringify(err)}<br>Please use this code to open an issue on github.com/deepnest-next/deepnest`,
-          true
-        );
+        message(readableConversionError(err), true);
       }
+    }
+  }
+
+  private onlineConverterEnabled(): boolean {
+    return this.config?.getSync("useOnlineConverter") === true;
+  }
+
+  /**
+   * @returns "ok" when the drawing was imported, otherwise a short reason
+   */
+  private importDxfLocally(filePath: string, filename: string): "ok" | string {
+    if (!this.fs) {
+      return "File system is not available";
+    }
+    try {
+      const svg = dxfToSvg(this.fs.readFileSync(filePath));
+      const scalingFactor = Number(this.config?.getSync("dxfImportScale")) || 1;
+      this.processSvgData(svg, filename, null, scalingFactor, true);
+      return "ok";
+    } catch (err) {
+      const error = err as { message?: string };
+      return error.message || "Could not read this DXF";
     }
   }
 

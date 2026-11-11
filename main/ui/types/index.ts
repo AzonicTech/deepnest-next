@@ -39,6 +39,11 @@ export interface UIConfig extends DeepNestConfig {
   exportWithSheetsSpaceValue: number;
   /** Show product/update notifications fetched from deepnest.net (default: true) */
   showNotifications: boolean;
+  /**
+   * Try the online converter only when local DXF conversion cannot read a file,
+   * or for DWG/PS/EPS. Off by default so the app works with no internet.
+   */
+  useOnlineConverter: boolean;
 }
 
 /**

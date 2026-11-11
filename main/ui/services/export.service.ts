@@ -13,6 +13,7 @@ import type {
 } from "../types/index.js";
 import { DEFAULT_CONVERSION_SERVER } from "../types/index.js";
 import { message } from "../utils/ui-helpers.js";
+import { readableConversionError } from "../utils/local-modules.js";
 
 /**
  * File filter options for the save dialog
@@ -429,7 +430,7 @@ export class ExportService {
       return false;
     }
 
-    // DXF is written here so arcs stay arcs. DWG still goes through the converter.
+    // DXF is written here so arcs stay arcs and no server is contacted.
     if (fileName.toLowerCase().endsWith(".dxf")) {
       if (!this.geometry()) {
         message("Export geometry is not loaded", true);
@@ -437,6 +438,14 @@ export class ExportService {
       }
       this.fs.writeFileSync(fileName, this.dxfForNest(selected));
       return true;
+    }
+
+    if (this.config?.getSync("useOnlineConverter") !== true) {
+      message(
+        "DWG export uses the online converter, and that option is off. Save as DXF to write the file on this computer.",
+        true
+      );
+      return false;
     }
 
     if (!this.httpClient || !this.FormData) {
@@ -497,10 +506,7 @@ export class ExportService {
           true
         );
       } else {
-        message(
-          `Could not contact file conversion server: ${JSON.stringify(err)}<br>Please use this code to open an issue on github.com/deepnest-next/deepnest`,
-          true
-        );
+        message(readableConversionError(err), true);
       }
       return false;
     } finally {

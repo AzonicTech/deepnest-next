@@ -43,6 +43,7 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
   dxfExportScale: 1,
   endpointTolerance: 0.36,
   conversionServer: DEFAULT_CONVERSION_SERVER,
+  useOnlineConverter: false,
   useSvgPreProcessor: false,
   useQuantityFromFileName: false,
   exportWithSheetBoundboarders: false,
@@ -63,6 +64,7 @@ export const BOOLEAN_CONFIG_KEYS: ReadonlyArray<keyof UIConfig> = [
   "exportWithSheetBoundboarders",
   "exportWithSheetsSpace",
   "showNotifications",
+  "useOnlineConverter",
 ];
 
 /**
@@ -108,6 +110,7 @@ export class ConfigService implements ConfigObject {
   exportWithSheetsSpace: boolean;
   exportWithSheetsSpaceValue: number;
   showNotifications: boolean;
+  useOnlineConverter: boolean;
   access_token?: string;
   id_token?: string;
 
@@ -147,6 +150,7 @@ export class ConfigService implements ConfigObject {
     this.exportWithSheetsSpace = this.config.exportWithSheetsSpace;
     this.exportWithSheetsSpaceValue = this.config.exportWithSheetsSpaceValue;
     this.showNotifications = this.config.showNotifications;
+    this.useOnlineConverter = this.config.useOnlineConverter;
   }
 
   /**
@@ -239,6 +243,8 @@ export class ConfigService implements ConfigObject {
     this.exportWithSheetBoundboarders = this.config.exportWithSheetBoundboarders;
     this.exportWithSheetsSpace = this.config.exportWithSheetsSpace;
     this.exportWithSheetsSpaceValue = this.config.exportWithSheetsSpaceValue;
+    this.showNotifications = this.config.showNotifications;
+    this.useOnlineConverter = this.config.useOnlineConverter;
     this.access_token = this.config.access_token;
     this.id_token = this.config.id_token;
   }
