@@ -13,7 +13,7 @@ import type {
 } from "../types/index.js";
 import { DEFAULT_CONVERSION_SERVER } from "../types/index.js";
 import { message } from "../utils/ui-helpers.js";
-import { convertDwg, dxfToSvg, readableConversionError } from "../utils/local-modules.js";
+import { convertDwg, dxfToSvg, readableConversionError, workFolders } from "../utils/local-modules.js";
 
 /**
  * File filter options for the open dialog
@@ -29,6 +29,7 @@ interface FileFilter {
 interface OpenDialogOptions {
   filters: FileFilter[];
   properties: ("openFile" | "multiSelections")[];
+  defaultPath?: string;
 }
 
 /**
@@ -417,9 +418,13 @@ export class ImportService {
     this.isImporting = true;
 
     try {
+      const start = workFolders().dialogFolder(
+        String(this.config?.getSync("defaultWorkFolder") || "")
+      );
       const result = await this.dialog.showOpenDialog({
         filters: FILE_FILTERS,
         properties: ["openFile", "multiSelections"],
+        defaultPath: start || undefined,
       });
 
       if (result.canceled) {
@@ -427,6 +432,7 @@ export class ImportService {
       }
 
       for (const filePath of result.filePaths) {
+        workFolders().noteImport(filePath);
         await this.processFile(filePath);
       }
     } finally {
@@ -598,9 +604,14 @@ export class ImportService {
   private async importDwgLocally(filePath: string, filename: string): Promise<"ok" | string> {
     try {
       const odaPath = String(this.config?.getSync("odaFileConverterPath") || "");
-      const converted = await convertDwg(filePath, { odaPath });
+      const dir = this.path ? this.path.dirname(filePath) : "";
+      const copyTo = dir ? workFolders().convertedDxfPath(dir, filename) : "";
+      const converted = await convertDwg(filePath, { odaPath, copyTo });
       if (!converted.ok || !converted.dxf) {
         return converted.message || "DWG needs the free ODA File Converter. Install it, then set its path in Settings.";
+      }
+      if (converted.copyError) {
+        message("Imported the DWG, but could not save the DXF copy: " + converted.copyError, true);
       }
       const svg = dxfToSvg(converted.dxf);
       const scalingFactor = Number(this.config?.getSync("dxfImportScale")) || 1;

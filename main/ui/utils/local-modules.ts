@@ -43,13 +43,24 @@ export function readableConversionError(err: unknown): string {
 
 export function convertDwg(
   dwgPath: string,
-  options?: { odaPath?: string }
-): Promise<{ ok: boolean; dxf?: Buffer; message?: string; code?: string }> {
+  options?: { odaPath?: string; copyTo?: string }
+): Promise<{ ok: boolean; dxf?: Buffer; message?: string; code?: string; copyError?: string; savedDxf?: string }> {
   const api = loadUtil("dwg-to-dxf.js") as {
     convertDwg: (
       file: string,
-      opts: { odaPath?: string }
-    ) => Promise<{ ok: boolean; dxf?: Buffer; message?: string; code?: string }>;
+      opts: { odaPath?: string; copyTo?: string }
+    ) => Promise<{ ok: boolean; dxf?: Buffer; message?: string; code?: string; copyError?: string; savedDxf?: string }>;
   };
   return api.convertDwg(dwgPath, options || {});
+}
+
+export interface WorkFolders {
+  noteImport(filePath: string): string;
+  dialogFolder(defaultWorkFolder: string): string;
+  currentSavePath(defaultWorkFolder: string, extension: string): string;
+  convertedDxfPath(directory: string, sourceName: string): string;
+}
+
+export function workFolders(): WorkFolders {
+  return loadUtil("work-folder.js") as WorkFolders;
 }

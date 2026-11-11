@@ -281,12 +281,25 @@ async function convertDwg(dwgPath, options) {
       const nameLabel = found.kind === "libredwg" ? "LibreDWG dwg2dxf" : "ODA File Converter";
       return { ok: false, code: "no-output", message: nameLabel + " did not write a DXF." };
     }
+    const dxf = fs.readFileSync(dxfPath);
+    let savedDxf = "";
+    let copyError = "";
+    if (opts.copyTo) {
+      try {
+        fs.writeFileSync(opts.copyTo, dxf);
+        savedDxf = opts.copyTo;
+      } catch (err) {
+        copyError = err && err.message ? err.message : "Could not save the DXF copy";
+      }
+    }
     return {
       ok: true,
       code: "ok",
-      dxf: fs.readFileSync(dxfPath),
+      dxf: dxf,
       converter: found.bin,
       kind: found.kind,
+      savedDxf: savedDxf,
+      copyError: copyError,
     };
   } finally {
     try {

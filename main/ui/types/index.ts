@@ -49,6 +49,11 @@ export interface UIConfig extends DeepNestConfig {
    * usual Linux and Windows install locations, then LibreDWG's dwg2dxf.
    */
   odaFileConverterPath: string;
+  /**
+   * Folder file dialogs open in before a job is imported.
+   * Empty means the home directory. Not a personal path.
+   */
+  defaultWorkFolder: string;
 }
 
 /**

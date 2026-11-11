@@ -470,6 +470,31 @@ function initializeConfigForm(): void {
     };
   });
 
+  const browseWorkFolder = getElement<HTMLButtonElement>("#browseWorkFolder");
+  if (browseWorkFolder) {
+    browseWorkFolder.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const dialog = electronRemote.dialog as {
+        showOpenDialog: (options: {
+          title: string;
+          defaultPath?: string;
+          properties: string[];
+        }) => Promise<{ canceled: boolean; filePaths: string[] }>;
+      };
+      const current = String(configService.getSync("defaultWorkFolder") || "");
+      const result = await dialog.showOpenDialog({
+        title: "Default work folder",
+        properties: ["openDirectory"],
+        defaultPath: current || undefined,
+      });
+      if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+        return;
+      }
+      configService.setSync("defaultWorkFolder", result.filePaths[0]);
+      updateForm(configService.getSync() as unknown as ConfigResult);
+    });
+  }
+
   // Reset to defaults button
   const setDefaultBtn = getElement<HTMLElement>("#setdefault");
   if (setDefaultBtn) {

@@ -382,6 +382,17 @@
               <input type="checkbox" data-config="useOnlineConverter" />
             </dd>
 
+            <dt>Default work folder</dt>
+            <dd>
+              <input
+                type="text"
+                value=""
+                placeholder="Home, until a job is imported"
+                data-config="defaultWorkFolder"
+              />
+              <button type="button" id="browseWorkFolder">Browse</button>
+            </dd>
+
             <dt>ODA File Converter path</dt>
             <dd>
               <input
@@ -3464,6 +3475,15 @@
           works with no internet. Turn it on only if a local read fails, or if
           you still need PS or EPS, which go to the conversion server. A failed
           server request shows the status code, not the file you uploaded.
+        </div>
+
+        <div class="config_explain" id="explain_defaultWorkFolder">
+          <h1>Default work folder</h1>
+          File dialogs open here until you import a drawing. After an import,
+          they open in that drawing's folder for the rest of the session. A
+          DWG conversion also leaves <i>name</i>.converted.dxf in that folder
+          and does not overwrite the original. If this folder is missing, dialogs
+          open in your home directory. Leave it blank in a fresh install.
         </div>
 
         <div class="config_explain" id="explain_odaFileConverterPath">

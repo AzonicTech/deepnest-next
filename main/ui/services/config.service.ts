@@ -45,6 +45,7 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
   conversionServer: DEFAULT_CONVERSION_SERVER,
   useOnlineConverter: false,
   odaFileConverterPath: "",
+  defaultWorkFolder: "",
   useSvgPreProcessor: false,
   useQuantityFromFileName: false,
   exportWithSheetBoundboarders: false,
@@ -113,6 +114,7 @@ export class ConfigService implements ConfigObject {
   showNotifications: boolean;
   useOnlineConverter: boolean;
   odaFileConverterPath: string;
+  defaultWorkFolder: string;
   access_token?: string;
   id_token?: string;
 
@@ -154,6 +156,7 @@ export class ConfigService implements ConfigObject {
     this.showNotifications = this.config.showNotifications;
     this.useOnlineConverter = this.config.useOnlineConverter;
     this.odaFileConverterPath = this.config.odaFileConverterPath;
+    this.defaultWorkFolder = this.config.defaultWorkFolder;
   }
 
   /**
@@ -249,6 +252,7 @@ export class ConfigService implements ConfigObject {
     this.showNotifications = this.config.showNotifications;
     this.useOnlineConverter = this.config.useOnlineConverter;
     this.odaFileConverterPath = this.config.odaFileConverterPath;
+    this.defaultWorkFolder = this.config.defaultWorkFolder;
     this.access_token = this.config.access_token;
     this.id_token = this.config.id_token;
   }

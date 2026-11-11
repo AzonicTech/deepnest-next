@@ -227,3 +227,34 @@ test("dwg2dxf is used only when ODA is not installed", async () => {
   assert.equal(calls[0].args[0], "-y");
   assert.equal(calls[0].args[1], "-o");
 });
+
+test("the DXF copy is kept beside the DWG after the temp dirs are removed", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deepnest-job-"));
+  const source = path.join(dir, "blade.dwg");
+  const copyTo = path.join(dir, "blade.converted.dxf");
+  fs.writeFileSync(source, "not a dxf");
+  let base = "";
+  const result = await dwg.convertDwg(source, {
+    odaPath: "/usr/bin/ODAFileConverter",
+    platform: "linux",
+    env: { PATH: "" },
+    copyTo: copyTo,
+    existsSync: detector(["/usr/bin/ODAFileConverter"]),
+    readdirSync: function () { return []; },
+    spawn: function (cmd, args) {
+      base = path.dirname(args[0]);
+      const proc = child();
+      setImmediate(function () {
+        fs.writeFileSync(path.join(args[1], "blade.dxf"), LINE_DXF);
+        proc.emit("exit", 0, null);
+      });
+      return proc;
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.savedDxf, copyTo);
+  assert.equal(fs.existsSync(base), false);
+  assert.equal(fs.readFileSync(source, "utf8"), "not a dxf");
+  assert.match(fs.readFileSync(copyTo, "utf8"), /LINE/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

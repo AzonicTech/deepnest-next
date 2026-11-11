@@ -13,7 +13,7 @@ import type {
 } from "../types/index.js";
 import { DEFAULT_CONVERSION_SERVER } from "../types/index.js";
 import { message } from "../utils/ui-helpers.js";
-import { readableConversionError } from "../utils/local-modules.js";
+import { readableConversionError, workFolders } from "../utils/local-modules.js";
 
 /**
  * File filter options for the save dialog
@@ -29,6 +29,7 @@ interface FileFilter {
 interface SaveDialogOptions {
   title: string;
   filters: FileFilter[];
+  defaultPath?: string;
 }
 
 /**
@@ -161,6 +162,10 @@ const SVG_FILE_FILTERS: FileFilter[] = [
 
 const DXF_FILE_FILTERS: FileFilter[] = [
   { name: "DXF/DWG", extensions: ["dxf", "dwg"] }
+];
+
+const JSON_FILE_FILTERS: FileFilter[] = [
+  { name: "JSON", extensions: ["json"] }
 ];
 
 /**
@@ -343,21 +348,38 @@ export class ExportService {
    * Saves to the NEST_DIRECTORY as exports.json
    * @returns True if export was successful
    */
+  private saveDefault(extension: string): string {
+    const configured = String(this.config?.getSync("defaultWorkFolder") || "");
+    return workFolders().currentSavePath(configured, extension);
+  }
+
   exportToJson(): boolean {
-    if (!this.remote || !this.fs || !this.deepNest) {
+    if (!this.fs || !this.deepNest) {
       return false;
     }
-
-    const nestDirectory = this.remote.getGlobal("NEST_DIRECTORY");
-    if (!nestDirectory) {
-      return false;
-    }
-
-    const filePath = nestDirectory + "exports.json";
 
     const selected = this.getSelectedNest();
     if (!selected) {
       return false;
+    }
+
+    let filePath = "";
+    if (this.dialog) {
+      const picked = this.dialog.showSaveDialogSync({
+        title: "Export deepnest JSON",
+        filters: JSON_FILE_FILTERS,
+        defaultPath: this.saveDefault("json"),
+      });
+      if (!picked) {
+        return false;
+      }
+      filePath = picked.toLowerCase().endsWith(".json") ? picked : picked + ".json";
+    } else {
+      const nestDirectory = this.remote?.getGlobal("NEST_DIRECTORY");
+      if (!nestDirectory) {
+        return false;
+      }
+      filePath = nestDirectory + "exports.json";
     }
 
     const fileData = JSON.stringify(selected);
@@ -379,6 +401,7 @@ export class ExportService {
     let fileName = this.dialog.showSaveDialogSync({
       title: "Export deepnest SVG",
       filters: SVG_FILE_FILTERS,
+      defaultPath: this.saveDefault("svg"),
     });
 
     if (fileName === undefined) {
@@ -414,6 +437,7 @@ export class ExportService {
     let fileName = this.dialog.showSaveDialogSync({
       title: "Export deepnest DXF",
       filters: DXF_FILE_FILTERS,
+      defaultPath: this.saveDefault("dxf"),
     });
 
     if (fileName === undefined) {
