@@ -22,6 +22,7 @@ import {
   createTranslate,
 } from "../utils/dom-utils.js";
 import { millisecondsToStr } from "../utils/ui-helpers.js";
+import { layoutNest } from "../utils/local-modules.js";
 
 /**
  * Ractive event object with original DOM event
@@ -182,6 +183,17 @@ export class NestViewService {
       return;
     }
 
+    // Draw this nest from scratch so a failed step cannot leave parts on top of each other.
+    while (svg.firstChild) {
+      svg.removeChild(svg.firstChild);
+    }
+
+    const frame = layoutNest(n.placements, (index) => {
+      const part = this.deepNest.parts[index];
+      return part && part.bounds ? part.bounds : undefined;
+    });
+    const transformById = new Map(frame.parts.map((part) => [String(part.id), part.transform]));
+
     // Remove active class from parts and sheets
     const parts = getElements<SVGElement>(SELECTORS.NEST_SVG_PARTS);
     parts.forEach((p) => {
@@ -214,8 +226,8 @@ export class NestViewService {
         svg.appendChild(group);
         groupElement = getElement<SVGGElement>(`#sheet${s.sheetid}`);
 
-        const sheetSource = this.sheetPart(s.sheet);
-        if (groupElement && sheetSource) {
+        const sheetSource = this.deepNest.parts[s.sheet];
+        if (groupElement && sheetSource && sheetSource.svgelements) {
           sheetSource.svgelements.forEach((e) => {
             const node = e.cloneNode(false) as SVGElement;
             node.setAttribute("stroke", "#ffffff");
@@ -235,11 +247,11 @@ export class NestViewService {
       groupElement.setAttribute("class", `${CSS_CLASSES.SHEET} ${CSS_CLASSES.ACTIVE}`);
       groupElement.removeAttribute("style");
 
-      const sheetPart = this.sheetPart(s.sheet);
-      if (!sheetPart || !sheetPart.bounds) {
+      const sheetSource = this.deepNest.parts[s.sheet];
+      if (!sheetSource || !sheetSource.bounds) {
         return;
       }
-      const sheetBounds: Bounds = sheetPart.bounds;
+      const sheetBounds: Bounds = sheetSource.bounds;
       groupElement.setAttribute(
         "transform",
         createTranslate(-sheetBounds.x, svgHeight - sheetBounds.y)
@@ -312,13 +324,12 @@ export class NestViewService {
             `${CSS_CLASSES.PART} ${CSS_CLASSES.ACTIVE}`
           );
 
-          // Same user units as the sheet. CSS pixel rotates swing parts
-          // around the viewport and crop the plate.
-          const rotation = p.rotation || 0;
+          // Sheet units. CSS pixel rotates swing around the viewport and crop the plate.
           partElement.removeAttribute("style");
           partElement.setAttribute(
             "transform",
-            `translate(${p.x - sheetBounds.x} ${p.y + svgHeight - sheetBounds.y}) rotate(${rotation})`
+            transformById.get(String(p.id)) ||
+              `translate(${p.x - sheetBounds.x} ${p.y + svgHeight - sheetBounds.y}) rotate(${p.rotation || 0})`
           );
 
           // Add merge lines if present
@@ -350,30 +361,15 @@ export class NestViewService {
       });
     }, 1500);
 
-    // Drop leftovers from an earlier draw so they cannot stretch the view.
-    svg.querySelectorAll("g.sheet:not(.active), g.part:not(.active)").forEach((el) => {
-      el.remove();
-    });
-
-    if (!(svgWidth > 0)) svgWidth = 1;
-    if (!(svgHeight > 0)) svgHeight = 1;
-
-    // Whole sheet, in its own orientation. meet scales that box into the pane.
+    // The viewBox is the sheet. width: 95% and height: auto scale that box to the pane.
     svg.removeAttribute("style");
     svg.removeAttribute("transform");
     setAttributes(svg, {
       width: "100%",
       height: "100%",
       preserveAspectRatio: "xMidYMid meet",
-      viewBox: `0 0 ${svgWidth} ${svgHeight}`,
+      viewBox: frame.viewBox,
     });
-  }
-
-  /** Sheet geometry for a placement. A bad index must not frame a part instead. */
-  private sheetPart(index: number): Part | undefined {
-    const indexed = this.deepNest.parts[index];
-    if (indexed && indexed.sheet && indexed.bounds) return indexed;
-    return this.deepNest.parts.find((part) => part.sheet && part.bounds);
   }
 
   /**

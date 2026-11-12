@@ -66,3 +66,24 @@ export interface WorkFolders {
 export function workFolders(): WorkFolders {
   return loadUtil("work-folder.js") as WorkFolders;
 }
+
+export interface NestFrame {
+  viewBox: string;
+  width: number;
+  height: number;
+  landscape: boolean;
+  parts: Array<{ id: number | string; transform: string }>;
+}
+
+export function layoutNest(
+  placements: Array<{ sheet: number; sheetplacements?: unknown[] }>,
+  boundsFor: (sheet: number) => { x: number; y: number; width: number; height: number } | undefined
+): NestFrame {
+  const api = loadUtil("nest-frame.js") as {
+    layoutNest: (
+      rows: Array<{ sheet: number; sheetplacements?: unknown[] }>,
+      lookup: (sheet: number) => { x: number; y: number; width: number; height: number } | undefined
+    ) => NestFrame;
+  };
+  return api.layoutNest(placements, boundsFor);
+}

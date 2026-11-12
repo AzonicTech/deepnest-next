@@ -150,6 +150,8 @@ export interface DeepNestInstance {
   nestStatus?: string;
   /** True when a new placement should be drawn, not just the status line */
   nestResultDirty?: boolean;
+  /** Redraw even when the restored nest is already the selected one */
+  forceNestDisplay?: boolean;
   /** Part-count nests pack with gravity for that run */
   compactPlacement: boolean;
   /** Known-good order and rotations for the current mix */

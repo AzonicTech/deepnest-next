@@ -9,6 +9,7 @@ import { HullPolygon } from '../build/util/HullPolygon.js';
 const { simplifyPolygon: simplifyPoly } = require("@deepnest/svg-preprocessor");
 const NestPlateau = require("./util/plateau.js");
 const NestDistribution = require("./util/distribution.js");
+const MaxOutResult = require("./util/max-out-result.js");
 require("./util/export-geometry.js");
 
 var config = {
@@ -1217,11 +1218,17 @@ export class DeepNest {
   };
 
   writePartQuantities(quantities) {
-    if (!quantities) return;
-    for (var i = 0; i < this.parts.length && i < quantities.length; i++) {
-      if (this.parts[i].sheet) continue;
-      if (typeof quantities[i] === "number") this.parts[i].quantity = quantities[i];
-    }
+    MaxOutResult.writeQuantities(this.parts, quantities);
+  };
+
+  // The results panel keeps this array. Replacing it leaves the panel on the old list.
+  replaceNests(list) {
+    var nests = this.nests;
+    var next = list || [];
+    nests.splice(0, nests.length);
+    for (var i = 0; i < next.length; i++) nests.push(next[i]);
+    this.nestResultDirty = true;
+    this.forceNestDisplay = true;
   };
 
   placedInNest(nest) {
@@ -1343,21 +1350,16 @@ export class DeepNest {
     var countsBefore = this.currentPartQuantities();
     var orderBefore = this.captureBestOrder();
     var complete = this.allPartsPlaced();
-    var snapshot = null;
+    var saved = null;
     if (complete && this.nests[0]) {
-      try {
-        snapshot = JSON.parse(JSON.stringify(this.nests[0]));
-        snapshot.selected = true;
-      } catch (err) {
-        snapshot = this.nests[0];
-        snapshot.selected = true;
-      }
+      saved = MaxOutResult.rememberFullFit(this.nests[0], countsBefore);
     }
     var step = this.maxOut.runner.onResult(complete);
-    if (complete && snapshot) {
-      this.maxOut.fullNest = snapshot;
-      this.maxOut.lastOrder = orderBefore;
-      this.maxOut.lastCounts = countsBefore;
+    if (complete && saved) {
+      this.maxOut.fullFit = saved;
+      this.maxOut.fullNest = saved.nest;
+      this.maxOut.lastOrder = orderBefore ? orderBefore.slice() : null;
+      this.maxOut.lastCounts = countsBefore.slice();
     }
     if (!step || step.action === "done") {
       this.finishMaxOut(step);
@@ -1384,8 +1386,7 @@ export class DeepNest {
     this.GA = null;
     this.cachedSheets = null;
     this.generationReported = false;
-    this.nests = [];
-    this.nestResultDirty = true;
+    this.replaceNests([]);
     if (this.plateau) this.plateau.reset();
     if (this.maxOutClock) this.maxOutClock.reset();
     this.maxOutLead = step.status;
@@ -1398,19 +1399,20 @@ export class DeepNest {
 
   finishMaxOut(step) {
     if (!this.maxOut) return;
-    if (step && step.quantities && !step.keepCurrent) {
-      this.writePartQuantities(step.quantities);
-    }
-    var currentIsFullWinner =
+    var saved = this.maxOut.fullFit;
+    var showingSavedCount =
       step &&
-      !step.keepCurrent &&
       step.totalParts > 0 &&
       this.expectedPartCount() === step.totalParts &&
       this.allPartsPlaced();
-    if (step && !step.keepCurrent && this.maxOut.fullNest && !currentIsFullWinner) {
-      this.nests = [this.maxOut.fullNest];
-      this.nests[0].selected = true;
+    if (step && step.keepCurrent) {
+      // Stopped before any count placed fully. Leave the quantities as they are.
+    } else if (saved && !showingSavedCount) {
+      MaxOutResult.restoreFullFit(this.nests, this.parts, saved);
       this.nestResultDirty = true;
+      this.forceNestDisplay = true;
+    } else if (step && step.quantities) {
+      this.writePartQuantities(step.quantities);
     }
     this.GA = null;
     this.maxOutLead = step && step.status ? step.status : this.maxOutLead;

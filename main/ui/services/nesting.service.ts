@@ -434,8 +434,24 @@ export class NestingService {
       }
 
       const dirty = !!this.deepNest.nestResultDirty;
+      const force = !!this.deepNest.forceNestDisplay;
       this.deepNest.nestResultDirty = false;
-      if (!dirty) {
+      this.deepNest.forceNestDisplay = false;
+      if (!dirty && !force) {
+        return;
+      }
+
+      if (force && this.deepNest.nests.length > 0) {
+        this.deepNest.nests.forEach((n) => {
+          n.selected = false;
+        });
+        const restored = this.deepNest.nests[0];
+        restored.selected = true;
+        if (this.displayNestFn) {
+          this.displayNestFn(restored);
+        }
+        this.nestRactive.update("nests");
+        this.enableExportButton();
         return;
       }
 
