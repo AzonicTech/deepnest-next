@@ -307,3 +307,53 @@ test("status text is human readable", () => {
   assert.match(timed, /1 minute/);
   assert.equal(timed.indexOf("seconds"), -1);
 });
+
+test("string zeros do not disable the max-out step clock", () => {
+  const cfg = NestPlateau.stepTriggerConfig({
+    stopOnPlateau: true,
+    plateauGenerations: "0",
+    plateauMinutes: 0,
+  });
+  assert.equal(cfg.plateauGenerations, 10);
+  assert.equal(cfg.plateauMinutes, 1);
+
+  const clock = NestPlateau.create();
+  clock.configure(cfg);
+  clock.reset(0);
+  clock.onGeneration([5], 0);
+  const byTime = clock.evaluate(60 * 1000);
+  assert.equal(byTime.stop, true);
+  assert.equal(byTime.reason, "time");
+});
+
+test("a configured generation limit is the step trigger, even as a string", () => {
+  const cfg = NestPlateau.stepTriggerConfig({
+    stopOnPlateau: true,
+    plateauGenerations: "4",
+    plateauMinutes: "0",
+  });
+  assert.equal(cfg.plateauGenerations, 4);
+  assert.equal(cfg.plateauMinutes, 0);
+
+  const clock = NestPlateau.create();
+  clock.configure(cfg);
+  clock.reset(0);
+  let decision = null;
+  for (let g = 0; g < 8; g++) {
+    decision = clock.onGeneration([5], g * 1000);
+    if (decision.stop) break;
+  }
+  assert.equal(decision.stop, true);
+  assert.equal(decision.generationsWithoutImprovement, 4);
+});
+
+test("turning auto-stop off still leaves a built-in step clock", () => {
+  const cfg = NestPlateau.stepTriggerConfig({
+    stopOnPlateau: false,
+    plateauGenerations: "0",
+    plateauMinutes: "0",
+  });
+  assert.equal(cfg.enabled, true);
+  assert.equal(cfg.plateauGenerations, 10);
+  assert.equal(cfg.plateauMinutes, 1);
+});

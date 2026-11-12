@@ -1335,16 +1335,16 @@ body.dark-mode #parts table tbody tr td input[type="number"]:focus {
   position: absolute;
   right: 0;
   bottom: 0;
-  overflow: scroll;
+  overflow: hidden;
   height: calc(100% - 2 * (var(--nav-width) - 0.625em));
 }
 
 #nestdisplay svg {
   width: 95%;
-  height: auto;
+  height: 100%;
   margin: 0 5% 0 0;
   display: block;
-  overflow: visible;
+  overflow: hidden;
 }
 
 #nestdisplay svg g.sheet,

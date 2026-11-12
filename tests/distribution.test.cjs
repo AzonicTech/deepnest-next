@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const Distribution = require("../main/util/distribution.js");
+const Plateau = require("../main/util/plateau.js");
 
 function sheet(width, height, quantity) {
   return {
@@ -291,4 +292,58 @@ test("a start that is too high walks down to the largest count that fits", () =>
   assert.equal(done.level, 3);
   assert.equal(done.totalParts, 9);
   assert.match(done.status, /3 of each/);
+});
+
+// Same loop deepnest runs: each finished generation hits the step clock, and a
+// full placement advances the count.
+function nestUntilStep(settings, fits) {
+  const clock = Plateau.create();
+  clock.configure(Plateau.stepTriggerConfig(settings));
+  clock.reset(0);
+  const plan = Distribution.maxOutSearch({
+    even: true,
+    rotations: 1,
+    items: threeDesigns(),
+  });
+  const run = Distribution.createMaxOutEscalation(plan, { startLevel: 10 });
+  let step = run.begin();
+  const tried = [];
+  let now = 0;
+  let guard = 0;
+  while (step.action === "try" && guard < 6) {
+    tried.push(step.level);
+    let decision = null;
+    for (let g = 0; g < 40; g++) {
+      now += 1000;
+      decision = clock.onGeneration([5], now);
+      if (decision.stop) break;
+    }
+    assert.equal(decision && decision.stop, true);
+    step = run.onResult(fits(step.level));
+    if (step.action === "try") clock.reset(now);
+    guard++;
+  }
+  return { step, tried };
+}
+
+test("disabled plateau limits still add a set once every part is placed", () => {
+  const { step, tried } = nestUntilStep(
+    { stopOnPlateau: true, plateauGenerations: "0", plateauMinutes: "0" },
+    (level) => level <= 10
+  );
+  assert.deepEqual(tried, [10, 11]);
+  assert.equal(step.action, "done");
+  assert.equal(step.level, 10);
+  assert.equal(step.status, "Final: 10 of each (30 parts) - 11 would not fit");
+});
+
+test("a real generation limit advances the count and then keeps the last full set", () => {
+  const { step, tried } = nestUntilStep(
+    { stopOnPlateau: true, plateauGenerations: "4", plateauMinutes: "0" },
+    (level) => level <= 11
+  );
+  assert.deepEqual(tried, [10, 11, 12]);
+  assert.equal(step.level, 11);
+  assert.match(step.status, /11 of each/);
+  assert.match(step.status, /12 would not fit/);
 });

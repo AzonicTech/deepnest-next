@@ -330,6 +330,29 @@
     return next;
   }
 
+  // Max-out advances the count on its own clock. A saved "0" (often a string)
+  // means the operator turned that limit off, so the count still steps after
+  // 10 generations or 1 minute without improvement. When a real limit is set,
+  // that limit is the step trigger.
+  function stepTriggerConfig(settings) {
+    var src = settings || {};
+    var flag = src.stopOnPlateau;
+    var enabled = flag !== false && flag !== "false" && flag !== 0 && flag !== "0";
+    var gens = parseFloat(src.plateauGenerations);
+    var mins = parseFloat(src.plateauMinutes);
+    if (!isFinite(gens) || gens < 0) gens = 0;
+    if (!isFinite(mins) || mins < 0) mins = 0;
+    if (!enabled || (gens <= 0 && mins <= 0)) {
+      return { enabled: true, plateauGenerations: 10, plateauMinutes: 1, minGenerations: 1 };
+    }
+    return {
+      enabled: true,
+      plateauGenerations: gens,
+      plateauMinutes: mins,
+      minGenerations: 1,
+    };
+  }
+
   return {
     create: create,
     defaults: DEFAULTS,
@@ -337,5 +360,6 @@
     formatStopMessage: formatStopMessage,
     formatMinutes: formatMinutes,
     migrateSavedConfig: migrateSavedConfig,
+    stepTriggerConfig: stepTriggerConfig,
   };
 });

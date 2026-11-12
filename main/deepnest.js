@@ -1271,6 +1271,33 @@ export class DeepNest {
     return seq;
   };
 
+  syncMaxOutClock(fresh) {
+    if (!this.maxOut || !this.maxOut.active) {
+      this.maxOutClock = null;
+      return;
+    }
+    if (!this.maxOutClock) this.maxOutClock = NestPlateau.create();
+    this.maxOutClock.configure(
+      NestPlateau.stepTriggerConfig({
+        stopOnPlateau: config.stopOnPlateau,
+        plateauGenerations: config.plateauGenerations,
+        plateauMinutes: config.plateauMinutes,
+      })
+    );
+    if (fresh) this.maxOutClock.reset();
+    else this.maxOutClock.resume();
+  };
+
+  tickMaxOutResult(fitness) {
+    if (!this.maxOutClock || !this.maxOut || !this.maxOut.active) return null;
+    return this.maxOutClock.onResult(fitness);
+  };
+
+  tickMaxOutGeneration(fitnesses) {
+    if (!this.maxOutClock || !this.maxOut || !this.maxOut.active) return null;
+    return this.maxOutClock.onGeneration(fitnesses);
+  };
+
   publishNestStatus(plateauText) {
     var lead = this.maxOutLead || "";
     var next = lead && plateauText ? lead + " · " + plateauText : lead || plateauText || "";
@@ -1360,6 +1387,7 @@ export class DeepNest {
     this.nests = [];
     this.nestResultDirty = true;
     if (this.plateau) this.plateau.reset();
+    if (this.maxOutClock) this.maxOutClock.reset();
     this.maxOutLead = step.status;
     this.publishNestStatus("");
     this._workerParts = this.buildWorkingCopies();
@@ -1444,6 +1472,7 @@ export class DeepNest {
     } else {
       this.plateau.resume();
     }
+    this.syncMaxOutClock(this.GA === null);
     this.publishNestStatus(this.plateau.statusText());
 
     if (this.eventEmitter) {
@@ -1488,8 +1517,10 @@ export class DeepNest {
 
     if (this.plateau) {
       var decision = this.plateau.onResult(payload.fitness);
+      var stepDecision = this.tickMaxOutResult(payload.fitness);
       this.publishNestStatus(this.plateau.statusText());
-      if (decision && decision.stop && this.working) {
+      var stopDecision = stepDecision && stepDecision.stop ? stepDecision : decision;
+      if (stopDecision && stopDecision.stop && this.working) {
         var stillWorking = this.GA.population.some(function (ind) {
           return !!ind.processing;
         });
@@ -1498,7 +1529,9 @@ export class DeepNest {
           // before launchWorkers gets to count it. Record that generation now
           // so Start nest evolves forward instead of scoring it a second time.
           var generationDecision = this.reportFinishedGeneration();
-          this.haltForPlateau(generationDecision || decision);
+          this.haltForPlateau(
+            generationDecision && generationDecision.stop ? generationDecision : stopDecision
+          );
           return;
         }
       }
@@ -1579,7 +1612,9 @@ export class DeepNest {
     }
     this.generationReported = true;
     var decision = this.plateau.onGeneration(generationFitness);
+    var stepDecision = this.tickMaxOutGeneration(generationFitness);
     this.publishNestStatus(this.plateau.statusText());
+    if (stepDecision && stepDecision.stop) return stepDecision;
     return decision;
   };
 
@@ -1720,18 +1755,21 @@ export class DeepNest {
 
     if (this.plateau) {
       var timeDecision = this.plateau.evaluate();
+      var stepTime =
+        this.maxOutClock && this.maxOut && this.maxOut.active ? this.maxOutClock.evaluate() : null;
       var nextStatus = this.plateau.statusText();
       if (this.publishNestStatus(nextStatus)) {
         if (displayCallback) {
           displayCallback();
         }
       }
-      if (timeDecision && timeDecision.stop) {
+      var stopDecision = stepTime && stepTime.stop ? stepTime : timeDecision;
+      if (stopDecision && stopDecision.stop) {
         var inflight = this.GA.population.some(function (individual) {
           return !!individual.processing;
         });
         if (!inflight) {
-          this.haltForPlateau(timeDecision);
+          this.haltForPlateau(stopDecision);
         }
         return;
       }
