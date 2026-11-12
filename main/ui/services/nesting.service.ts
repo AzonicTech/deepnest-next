@@ -30,7 +30,30 @@ interface FileSystem {
  */
 interface IpcRenderer {
   send(channel: string, ...args: unknown[]): void;
+  on?(channel: string, listener: (event: unknown, payload: unknown) => void): void;
+  removeListener?(channel: string, listener: (event: unknown, payload: unknown) => void): void;
 }
+
+interface FitPayload {
+  even: boolean;
+  rotations: number;
+  config: Record<string, unknown>;
+  items: unknown[];
+}
+
+interface FitSuccess {
+  quantities: number[];
+  sequence: number[];
+  rotationByIndex: Record<string, number>;
+  hint: string;
+  totalParts: number;
+  level?: number;
+}
+
+type DistributionPrep =
+  | { ok: false; message: string }
+  | { ok: true; probe: false }
+  | { ok: true; probe: true; payload: FitPayload; apply: (result: FitSuccess) => void };
 
 /**
  * Display callback function type
@@ -115,6 +138,12 @@ export class NestingService {
   /** Flag indicating if nesting is being stopped */
   private isStopping = false;
 
+  /** Writes quantities from the distribution mix before a nest starts */
+  private prepareDistribution: (() => DistributionPrep) | null = null;
+
+  /** True while max-out is measuring how many copies fit */
+  private measuring = false;
+
   /**
    * Create a new NestingService instance
    * Dependencies are injected for testability
@@ -126,6 +155,7 @@ export class NestingService {
     nestRactive?: RactiveInstance<NestViewData>;
     displayNestFn?: DisplayNestFunction;
     saveJsonFn?: SaveJsonFunction;
+    prepareDistribution?: () => DistributionPrep;
   }) {
     if (options) {
       this.fs = options.fs || null;
@@ -134,7 +164,15 @@ export class NestingService {
       this.nestRactive = options.nestRactive || null;
       this.displayNestFn = options.displayNestFn || null;
       this.saveJsonFn = options.saveJsonFn || null;
+      this.prepareDistribution = options.prepareDistribution || null;
     }
+  }
+
+  /**
+   * Set the hook that turns a distribution mix into part quantities.
+   */
+  setPrepareDistribution(prepareDistribution: () => DistributionPrep): void {
+    this.prepareDistribution = prepareDistribution;
   }
 
   /**
@@ -381,9 +419,39 @@ export class NestingService {
    * This callback is called when a new nesting result is available
    * @returns Display callback function bound to this service
    */
+  private syncNestStatus(): void {
+    if (!this.nestRactive || !this.deepNest) {
+      return;
+    }
+    this.nestRactive.set("nestStatus", this.deepNest.nestStatus || "");
+  }
+
   private createDisplayCallback(): DisplayCallback {
     return () => {
+      this.syncNestStatus();
       if (!this.deepNest || !this.nestRactive) {
+        return;
+      }
+
+      const dirty = !!this.deepNest.nestResultDirty;
+      const force = !!this.deepNest.forceNestDisplay;
+      this.deepNest.nestResultDirty = false;
+      this.deepNest.forceNestDisplay = false;
+      if (!dirty && !force) {
+        return;
+      }
+
+      if (force && this.deepNest.nests.length > 0) {
+        this.deepNest.nests.forEach((n) => {
+          n.selected = false;
+        });
+        const restored = this.deepNest.nests[0];
+        restored.selected = true;
+        if (this.displayNestFn) {
+          this.displayNestFn(restored);
+        }
+        this.nestRactive.update("nests");
+        this.enableExportButton();
         return;
       }
 
@@ -446,25 +514,106 @@ export class NestingService {
       return false;
     }
 
+    if (this.measuring) {
+      return false;
+    }
+
+    const prep = this.prepareDistribution
+      ? this.prepareDistribution()
+      : ({ ok: true, probe: false } as const);
+
+    if (!prep.ok) {
+      message(prep.message);
+      return false;
+    }
+
+    if (prep.probe) {
+      this.measureThenStart(prep, progressCallback);
+      return true;
+    }
+
+    this.launchNest(progressCallback);
+    return true;
+  }
+
+  /**
+   * Switch to the nest view and start the genetic search.
+   */
+  private launchNest(progressCallback?: ProgressCallback): void {
+    if (!this.deepNest) return;
+
     this.isStarting = true;
 
     try {
-      // Switch to nest view
       this.switchToNestView();
-
-      // Clear the cache
       this.deleteCache();
-
-      // Create the display callback
       const displayCallback = this.createDisplayCallback();
-
-      // Start the nesting process
-      this.deepNest.start(progressCallback || null, displayCallback);
-
-      return true;
+      this.deepNest.start(progressCallback || null, displayCallback, () => {
+        this.handleAutoStop();
+      });
     } finally {
       this.isStarting = false;
     }
+  }
+
+  /**
+   * Max-out asks a background window how many copies actually fit, then nests that mix.
+   */
+  private measureThenStart(
+    prep: { payload: FitPayload; apply: (result: FitSuccess) => void },
+    progressCallback?: ProgressCallback
+  ): void {
+    if (!this.ipcRenderer || !this.ipcRenderer.on) {
+      this.measuring = false;
+      message("Cannot measure the sheets without the nesting workers.");
+      return;
+    }
+
+    this.measuring = true;
+    const id = Date.now();
+    message("Measuring how many whole sets fit on the sheets…");
+
+    const onResult = (_event: unknown, payload: unknown) => {
+      const result = payload as { id?: number; ok?: boolean; error?: string; result?: FitSuccess };
+      if (!result || result.id !== id) return;
+      if (this.ipcRenderer && this.ipcRenderer.removeListener) {
+        this.ipcRenderer.removeListener("distribution-fit-result", onResult);
+      }
+      this.measuring = false;
+      if (!result.ok || !result.result) {
+        message(result.error || "Could not measure how many parts fit.");
+        return;
+      }
+      if (!(result.result.totalParts > 0)) {
+        message(result.result.hint || "Nothing from this mix fits on the sheets.");
+        return;
+      }
+      prep.apply(result.result);
+      message(result.result.hint);
+      this.launchNest(progressCallback);
+    };
+
+    this.ipcRenderer.on("distribution-fit-result", onResult);
+    this.ipcRenderer.send("distribution-fit", Object.assign({ id: id }, prep.payload));
+  }
+
+  /**
+   * Apply the stopped-button state and tell the operator why the search ended.
+   * Does not clear the best nest. Start nest resumes from it.
+   */
+  private handleAutoStop(): void {
+    this.syncNestStatus();
+    this.clearProgressIndicators();
+    this.updateStopButton("stop-disabled");
+
+    const text =
+      this.deepNest?.nestStatus ||
+      "Nesting stopped: search plateaued. Best layout is ready to export.";
+    message(text);
+
+    setTimeout(() => {
+      this.updateStopButton("start");
+    }, 3000);
   }
 
   /**
@@ -574,6 +723,7 @@ export class NestingService {
 
       // Update the nest view
       if (this.nestRactive) {
+        this.nestRactive.set("nestStatus", "");
         this.nestRactive.update("nests");
       }
 

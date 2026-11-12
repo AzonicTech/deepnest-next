@@ -20,9 +20,9 @@ import {
   serializeSvg,
   setInnerHtml,
   createTranslate,
-  createCssTransform,
 } from "../utils/dom-utils.js";
 import { millisecondsToStr } from "../utils/ui-helpers.js";
+import { layoutNest } from "../utils/local-modules.js";
 
 /**
  * Ractive event object with original DOM event
@@ -76,6 +76,7 @@ interface RactiveOptions {
  */
 interface NestViewData {
   nests: SelectableNestingResult[];
+  nestStatus: string;
   getSelected: () => SelectableNestingResult[];
   getNestedPartSources: (n: SelectableNestingResult) => number[];
   getColorBySource: (id: number) => string;
@@ -182,6 +183,17 @@ export class NestViewService {
       return;
     }
 
+    // Draw this nest from scratch so a failed step cannot leave parts on top of each other.
+    while (svg.firstChild) {
+      svg.removeChild(svg.firstChild);
+    }
+
+    const frame = layoutNest(n.placements, (index) => {
+      const part = this.deepNest.parts[index];
+      return part && part.bounds ? part.bounds : undefined;
+    });
+    const transformById = new Map(frame.parts.map((part) => [String(part.id), part.transform]));
+
     // Remove active class from parts and sheets
     const parts = getElements<SVGElement>(SELECTORS.NEST_SVG_PARTS);
     parts.forEach((p) => {
@@ -214,12 +226,14 @@ export class NestViewService {
         svg.appendChild(group);
         groupElement = getElement<SVGGElement>(`#sheet${s.sheetid}`);
 
-        if (groupElement && this.deepNest.parts[s.sheet]) {
-          this.deepNest.parts[s.sheet].svgelements.forEach((e) => {
+        const sheetSource = this.deepNest.parts[s.sheet];
+        if (groupElement && sheetSource && sheetSource.svgelements) {
+          sheetSource.svgelements.forEach((e) => {
             const node = e.cloneNode(false) as SVGElement;
             node.setAttribute("stroke", "#ffffff");
             node.setAttribute("fill", "none");
             node.removeAttribute("style");
+            node.removeAttribute("transform");
             groupElement!.appendChild(node);
           });
         }
@@ -229,10 +243,15 @@ export class NestViewService {
         return;
       }
 
-      // Reset class (make visible)
+      // Reset class (make visible). Translate only: never rotate the sheet.
       groupElement.setAttribute("class", `${CSS_CLASSES.SHEET} ${CSS_CLASSES.ACTIVE}`);
+      groupElement.removeAttribute("style");
 
-      const sheetBounds: Bounds = this.deepNest.parts[s.sheet].bounds;
+      const sheetSource = this.deepNest.parts[s.sheet];
+      if (!sheetSource || !sheetSource.bounds) {
+        return;
+      }
+      const sheetBounds: Bounds = sheetSource.bounds;
       groupElement.setAttribute(
         "transform",
         createTranslate(-sheetBounds.x, svgHeight - sheetBounds.y)
@@ -305,14 +324,12 @@ export class NestViewService {
             `${CSS_CLASSES.PART} ${CSS_CLASSES.ACTIVE}`
           );
 
-          // Position part with CSS transform
+          // Sheet units. CSS pixel rotates swing around the viewport and crop the plate.
+          partElement.removeAttribute("style");
           partElement.setAttribute(
-            "style",
-            `transform: ${createCssTransform(
-              p.x - sheetBounds.x,
-              p.y + svgHeight - sheetBounds.y,
-              p.rotation
-            )}`
+            "transform",
+            transformById.get(String(p.id)) ||
+              `translate(${p.x - sheetBounds.x} ${p.y + svgHeight - sheetBounds.y}) rotate(${p.rotation || 0})`
           );
 
           // Add merge lines if present
@@ -344,11 +361,14 @@ export class NestViewService {
       });
     }, 1500);
 
-    // Set SVG viewBox
+    // The viewBox is the sheet. width: 95% and height: auto scale that box to the pane.
+    svg.removeAttribute("style");
+    svg.removeAttribute("transform");
     setAttributes(svg, {
       width: "100%",
       height: "100%",
-      viewBox: `0 0 ${svgWidth} ${svgHeight}`,
+      preserveAspectRatio: "xMidYMid meet",
+      viewBox: frame.viewBox,
     });
   }
 
@@ -365,6 +385,7 @@ export class NestViewService {
       template: SELECTORS.NEST_TEMPLATE,
       data: {
         nests: deepNest.nests,
+        nestStatus: deepNest.nestStatus || "",
         getSelected: function (this: {
           get: (key: string) => SelectableNestingResult[];
         }): SelectableNestingResult[] {

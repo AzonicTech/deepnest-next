@@ -13,6 +13,7 @@ import type {
 } from "../types/index.js";
 import { DEFAULT_CONVERSION_SERVER } from "../types/index.js";
 import { message } from "../utils/ui-helpers.js";
+import { readableConversionError, workFolders } from "../utils/local-modules.js";
 
 /**
  * File filter options for the save dialog
@@ -28,6 +29,7 @@ interface FileFilter {
 interface SaveDialogOptions {
   title: string;
   filters: FileFilter[];
+  defaultPath?: string;
 }
 
 /**
@@ -101,6 +103,27 @@ interface PartPlacement {
   rotation: number;
 }
 
+interface ExportGeometryApi {
+  placePath(
+    d: string,
+    placement: { x: number; y: number; rotation: number },
+    tolerance: number
+  ): { d: string; subpaths: unknown[]; segments: number; sourceSegments: number };
+  placePolyline(
+    points: { x: number; y: number }[],
+    closed: boolean,
+    placement: { x: number; y: number; rotation: number },
+    tolerance: number
+  ): { d: string; subpaths: unknown[]; segments: number; sourceSegments: number };
+  toDxf(subpaths: unknown[], scale: number, units?: string): string;
+}
+
+declare global {
+  interface Window {
+    ExportGeometry?: ExportGeometryApi;
+  }
+}
+
 /**
  * Sheet with placements (matches NestingResult.placements structure)
  */
@@ -141,6 +164,10 @@ const DXF_FILE_FILTERS: FileFilter[] = [
   { name: "DXF/DWG", extensions: ["dxf", "dwg"] }
 ];
 
+const JSON_FILE_FILTERS: FileFilter[] = [
+  { name: "JSON", extensions: ["json"] }
+];
+
 /**
  * Export Service class
  * Handles export operations for nesting results to various formats
@@ -167,9 +194,6 @@ export class ExportService {
 
   /** DeepNest instance for accessing parts and nests */
   private deepNest: DeepNestInstance | null = null;
-
-  /** SvgParser instance for line merging operations */
-  private svgParser: SvgParserInstance | null = null;
 
   /** Export button element for spinner state */
   private exportButton: ExportButtonElement | null = null;
@@ -200,7 +224,7 @@ export class ExportService {
       this.FormData = options.FormData || null;
       this.config = options.config || null;
       this.deepNest = options.deepNest || null;
-      this.svgParser = options.svgParser || null;
+      void options.svgParser;
       this.exportButton = options.exportButton || null;
     }
   }
@@ -262,11 +286,10 @@ export class ExportService {
   }
 
   /**
-   * Set the SvgParser instance for line merging operations
-   * @param svgParser - SvgParser instance
+   * Retained for callers. Cut export no longer flattens curves through SvgParser.
    */
-  setSvgParser(svgParser: SvgParserInstance): void {
-    this.svgParser = svgParser;
+  setSvgParser(_svgParser: SvgParserInstance): void {
+    void _svgParser;
   }
 
   /**
@@ -325,21 +348,38 @@ export class ExportService {
    * Saves to the NEST_DIRECTORY as exports.json
    * @returns True if export was successful
    */
+  private saveDefault(extension: string): string {
+    const configured = String(this.config?.getSync("defaultWorkFolder") || "");
+    return workFolders().currentSavePath(configured, extension);
+  }
+
   exportToJson(): boolean {
-    if (!this.remote || !this.fs || !this.deepNest) {
+    if (!this.fs || !this.deepNest) {
       return false;
     }
-
-    const nestDirectory = this.remote.getGlobal("NEST_DIRECTORY");
-    if (!nestDirectory) {
-      return false;
-    }
-
-    const filePath = nestDirectory + "exports.json";
 
     const selected = this.getSelectedNest();
     if (!selected) {
       return false;
+    }
+
+    let filePath = "";
+    if (this.dialog) {
+      const picked = this.dialog.showSaveDialogSync({
+        title: "Export deepnest JSON",
+        filters: JSON_FILE_FILTERS,
+        defaultPath: this.saveDefault("json"),
+      });
+      if (!picked) {
+        return false;
+      }
+      filePath = picked.toLowerCase().endsWith(".json") ? picked : picked + ".json";
+    } else {
+      const nestDirectory = this.remote?.getGlobal("NEST_DIRECTORY");
+      if (!nestDirectory) {
+        return false;
+      }
+      filePath = nestDirectory + "exports.json";
     }
 
     const fileData = JSON.stringify(selected);
@@ -361,6 +401,7 @@ export class ExportService {
     let fileName = this.dialog.showSaveDialogSync({
       title: "Export deepnest SVG",
       filters: SVG_FILE_FILTERS,
+      defaultPath: this.saveDefault("svg"),
     });
 
     if (fileName === undefined) {
@@ -388,7 +429,7 @@ export class ExportService {
    * @returns Promise that resolves to true if export was successful
    */
   async exportToDxf(): Promise<boolean> {
-    if (!this.dialog || !this.fs || !this.httpClient || !this.FormData) {
+    if (!this.dialog || !this.fs) {
       message("Export dependencies not available", true);
       return false;
     }
@@ -396,6 +437,7 @@ export class ExportService {
     let fileName = this.dialog.showSaveDialogSync({
       title: "Export deepnest DXF",
       filters: DXF_FILE_FILTERS,
+      defaultPath: this.saveDefault("dxf"),
     });
 
     if (fileName === undefined) {
@@ -409,6 +451,29 @@ export class ExportService {
 
     const selected = this.getSelectedNest();
     if (!selected) {
+      return false;
+    }
+
+    // DXF is written here so arcs stay arcs and no server is contacted.
+    if (fileName.toLowerCase().endsWith(".dxf")) {
+      if (!this.geometry()) {
+        message("Export geometry is not loaded", true);
+        return false;
+      }
+      this.fs.writeFileSync(fileName, this.dxfForNest(selected));
+      return true;
+    }
+
+    if (this.config?.getSync("useOnlineConverter") !== true) {
+      message(
+        "DWG export uses the online converter, and that option is off. Save as DXF to write the file on this computer.",
+        true
+      );
+      return false;
+    }
+
+    if (!this.httpClient || !this.FormData) {
+      message("Export dependencies not available", true);
       return false;
     }
 
@@ -465,10 +530,7 @@ export class ExportService {
           true
         );
       } else {
-        message(
-          `Could not contact file conversion server: ${JSON.stringify(err)}<br>Please use this code to open an issue on github.com/deepnest-next/deepnest`,
-          true
-        );
+        message(readableConversionError(err), true);
       }
       return false;
     } finally {
@@ -526,35 +588,19 @@ export class ExportService {
         svgWidth = sheetBounds.width;
       }
 
-      // Add each part placement
+      // Add each part placement. Curves stay real curves; the placement
+      // rotate-then-translate is baked into the path so a CAM program does
+      // not resample the group transform into line segments.
       s.sheetplacements.forEach((p) => {
         const part = parts[p.source];
         const partGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        partGroup.setAttribute("id", String(p.id));
 
-        // Clone all SVG elements from the part
         part.svgelements.forEach((e) => {
-          const node = e.cloneNode(false) as Element;
-
-          // Handle image elements with relative paths
-          if (node.tagName === "image") {
-            const relPath = node.getAttribute("data-href");
-            if (relPath) {
-              node.setAttribute("href", relPath);
-            }
-            node.removeAttribute("data-href");
-          }
-
-          partGroup.appendChild(node);
+          partGroup.appendChild(this.placedElement(e, p));
         });
 
         group.appendChild(partGroup);
-
-        // Position and rotate the part
-        partGroup.setAttribute(
-          "transform",
-          `translate(${p.x} ${p.y}) rotate(${p.rotation})`
-        );
-        partGroup.setAttribute("id", String(p.id));
       });
 
       // Update height for next sheet
@@ -569,10 +615,116 @@ export class ExportService {
     // Calculate final dimensions with scaling
     this.applyDimensions(svg, svgWidth, svgHeight, options);
 
-    // Apply line merging if configured
-    this.applyLineMerging(svg, nestResult);
+    // Shared-edge merging used to split every contour into one line element
+    // per segment. That is the extra motion the cutter stutters on, so the
+    // cut file keeps the original curves and simplified polylines instead.
 
     return new XMLSerializer().serializeToString(svg);
+  }
+
+  private exportTolerance(): number {
+    const value = Number(this.config?.getSync("exportCurveTolerance"));
+    return value > 0 ? value : 0;
+  }
+
+  private geometry(): ExportGeometryApi | null {
+    return window.ExportGeometry || null;
+  }
+
+  private placedElement(source: Element, placement: PartPlacement): Element {
+    const node = source.cloneNode(false) as Element;
+    if (node.tagName === "image") {
+      const relPath = node.getAttribute("data-href");
+      if (relPath) node.setAttribute("href", relPath);
+      node.removeAttribute("data-href");
+    }
+
+    const api = this.geometry();
+    const tag = node.tagName.toLowerCase();
+    const transform = `translate(${placement.x} ${placement.y}) rotate(${placement.rotation})`;
+    if (!api) {
+      node.setAttribute("transform", transform);
+      return node;
+    }
+
+    if (tag === "path") {
+      const placed = api.placePath(node.getAttribute("d") || "", placement, this.exportTolerance());
+      node.setAttribute("d", placed.d);
+      node.removeAttribute("transform");
+      return node;
+    }
+
+    if (tag === "polygon" || tag === "polyline") {
+      const points = this.readSvgPoints(node);
+      if (points.length) {
+        const placed = api.placePolyline(points, tag === "polygon", placement, this.exportTolerance());
+        const path = source.ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", placed.d);
+        path.setAttribute("fill", node.getAttribute("fill") || "none");
+        path.setAttribute("stroke", node.getAttribute("stroke") || "#000000");
+        return path;
+      }
+    }
+
+    node.setAttribute("transform", transform);
+    return node;
+  }
+
+  private readSvgPoints(node: Element): { x: number; y: number }[] {
+    const points = (node as SVGPolygonElement).points;
+    if (!points) return [];
+    const list = [];
+    for (let i = 0; i < points.numberOfItems; i++) {
+      const point = points.getItem(i);
+      list.push({ x: point.x, y: point.y });
+    }
+    return list;
+  }
+
+  /**
+   * DXF in sheet units, with arc bulges instead of a line per sample.
+   */
+  dxfForNest(nestResult: SelectableNestingResult): string {
+    if (!this.deepNest || !this.config || !this.geometry()) {
+      throw new Error("DXF export is not available");
+    }
+    const api = this.geometry()!;
+    const parts = this.deepNest.parts;
+    const subpaths: unknown[] = [];
+    let svgHeight = 0;
+    const tolerance = this.exportTolerance();
+    const placements = nestResult.placements as SheetGroup[];
+
+    placements.forEach((s) => {
+      const sheetBounds = parts[s.sheet].bounds;
+      s.sheetplacements.forEach((p) => {
+        const placement = {
+          x: p.x - sheetBounds.x,
+          y: p.y + svgHeight - sheetBounds.y,
+          rotation: p.rotation,
+        };
+        parts[p.source].svgelements.forEach((element) => {
+          const tag = element.tagName.toLowerCase();
+          if (tag === "path") {
+            subpaths.push(
+              ...api.placePath(element.getAttribute("d") || "", placement, tolerance).subpaths
+            );
+          } else if (tag === "polygon" || tag === "polyline") {
+            const points = this.readSvgPoints(element);
+            if (!points.length) return;
+            subpaths.push(
+              ...api.placePolyline(points, tag === "polygon", placement, tolerance).subpaths
+            );
+          }
+        });
+      });
+      svgHeight += sheetBounds.height;
+    });
+
+    const scale = Number(this.config.getSync("scale")) || 72;
+    const units = this.config.getSync("units");
+    const factor = units === "mm" ? 25.4 / scale : 1 / scale;
+    return api.toDxf(subpaths, factor, units);
   }
 
   /**
@@ -625,43 +777,6 @@ export class ExportService {
     svg.setAttribute("width", `${width / scale}${unitSuffix}`);
     svg.setAttribute("height", `${height / scale}${unitSuffix}`);
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  }
-
-  /**
-   * Apply line merging optimization if configured
-   * @param svg - SVG element
-   * @param nestResult - Nesting result with merged length info
-   */
-  private applyLineMerging(
-    svg: SVGSVGElement,
-    nestResult: SelectableNestingResult
-  ): void {
-    if (!this.config || !this.svgParser) {
-      return;
-    }
-
-    const mergeLines = this.config.getSync("mergeLines");
-    const mergedLength = (nestResult as unknown as { mergedLength?: number }).mergedLength;
-
-    if (mergeLines && mergedLength && mergedLength > 0) {
-      const curveTolerance = this.config.getSync("curveTolerance");
-
-      // Apply SVG processing for line optimization
-      this.svgParser.applyTransform(svg);
-      this.svgParser.flatten(svg);
-      this.svgParser.splitLines(svg);
-      this.svgParser.mergeOverlap(svg, 0.1 * curveTolerance);
-      this.svgParser.mergeLines(svg);
-
-      // Set stroke and fill for all non-group, non-image elements
-      const elements = Array.prototype.slice.call(svg.children) as Element[];
-      elements.forEach((e) => {
-        if (e.tagName !== "g" && e.tagName !== "image") {
-          e.setAttribute("fill", "none");
-          e.setAttribute("stroke", "#000000");
-        }
-      });
-    }
   }
 
   /**

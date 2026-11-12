@@ -98,6 +98,7 @@
         	<div class="group"><h1>{{ getUtilisation() }}%</h1><span class="label">sheet utilisation</span></div>
         	<div class="group"><h1>{{ getTimeSaved() }}</h1><span class="label">laser time saved</span></div>
         	<div class="group"><h1>best nests so far</h1></div>
+        	<div class="group neststatus {{ nestStatus ? 'active' : '' }}">{{ nestStatus }}</div>
         	<div id="nestlist">
         		{{#each nests:i}}
         		<span class="nest {{ selected ? "active" : "" }}" on-click="selectnest:{{this}}">
@@ -140,6 +141,23 @@
 
           <div id="parts" class="parts-drag">
 
+          	<div id="distribution" class="{{ useDistribution ? 'on' : '' }}">
+          		<label><input type="checkbox" checked="{{useDistribution}}" on-change="distributionchange" /> Use distribution</label>
+          		<label class="{{ useDistribution ? '' : 'is-inactive' }}">How many
+          			<select value="{{distributionMode}}" on-change="distributionchange">
+          				<option value="maxout">Max out the sheets</option>
+          				<option value="count">Part count</option>
+          			</select>
+          		</label>
+          		<label class="{{ useDistribution ? '' : 'is-inactive' }}"><input type="checkbox" checked="{{evenDistribution}}" on-change="distributionchange" /> Even distribution</label>
+          		{{#if distributionMode === 'count'}}
+          		<label class="{{ useDistribution ? '' : 'is-inactive' }}">Total
+          			<input type="number" min="0" step="1" value="{{distributionTotal}}" on-change="distributionchange" />
+          		</label>
+          		{{/if}}
+          		<p class="dist-hint">{{distributionHint}}</p>
+          	</div>
+
           	<div id="partscroll">
           		<table>
           			<thead>
@@ -148,6 +166,7 @@
           					<th data-sort-field="area"><span>Size</span></th>
           					<th data-sort-field="sheet"><span>Sheet</span></th>
           					<th data-sort-field="quantity"><span>Quantity</span></th>
+          					{{#if showPercents}}<th><span>%</span></th>{{/if}}
           				</tr>
           			</thead>
           			<tbody>
@@ -155,8 +174,15 @@
           					<tr on-mouseenter-mousedown="selecthandler:{{this}}" class='{{ selected ? "active" : "" }}'>
           						<td>{{{ partrenderer(this) }}} <span style="display: none">{{bounds.width}}</span></td>
           						<td><dimensionLabel/></td>
-          						<td><input type="checkbox" checked='{{sheet}}' /></td>
-          						<td><input type="number" min="1" step="1" value="{{quantity}}" /></td>
+          						<td><input type="checkbox" checked='{{sheet}}' on-change="distributionchange" /></td>
+          						<td><input type="number" min="0" step="1" value="{{quantity}}" readonly="{{ useDistribution && !sheet }}" on-change="distributionchange" /></td>
+          						{{#if showPercents}}
+          						<td>
+          							{{#unless sheet}}
+          							<input class="percent" type="number" min="0" max="100" step="any" value="{{distributionPercent}}" on-change="distributionchange" />
+          							{{/unless}}
+          						</td>
+          						{{/if}}
           					</tr>
           				{{/each}}
           			</tbody>
@@ -255,6 +281,20 @@
               <i><span class="unit-label">inch</span></i>
             </dd>
 
+            <dt>Export curve tolerance</dt>
+            <dd>
+              <input
+                type="number"
+                value="0.005"
+                min="0"
+                step="any"
+                data-config="exportCurveTolerance"
+                data-conversion="true"
+                required
+              />
+              <i><span class="unit-label">inch</span></i>
+            </dd>
+
             <dt>Part rotations</dt>
             <dd>
               <input
@@ -335,6 +375,32 @@
                 required
               />
               <i><span class="unit-label">inch</span></i>
+            </dd>
+
+            <dt>Use online converter if local conversion fails</dt>
+            <dd>
+              <input type="checkbox" data-config="useOnlineConverter" />
+            </dd>
+
+            <dt>Default work folder</dt>
+            <dd>
+              <input
+                type="text"
+                value=""
+                placeholder="Home, until a job is imported"
+                data-config="defaultWorkFolder"
+              />
+              <button type="button" id="browseWorkFolder">Browse</button>
+            </dd>
+
+            <dt>ODA File Converter path</dt>
+            <dd>
+              <input
+                type="text"
+                value=""
+                placeholder="Leave blank to auto-detect"
+                data-config="odaFileConverterPath"
+              />
             </dd>
 
             <dt>DXF import units</dt>
@@ -450,6 +516,37 @@
                 min="1"
                 max="512"
                 data-config="mutationRate"
+                required
+              />
+            </dd>
+
+            <dt>Stop when plateaued</dt>
+            <dd>
+              <input type="checkbox" checked="checked" data-config="stopOnPlateau" />
+            </dd>
+
+            <dt>Stop after generations without improvement</dt>
+            <dd>
+              <input
+                type="number"
+                value="10"
+                step="1"
+                min="0"
+                max="1000"
+                data-config="plateauGenerations"
+                required
+              />
+            </dd>
+
+            <dt>Stop after minutes without improvement</dt>
+            <dd>
+              <input
+                type="number"
+                value="1"
+                step="any"
+                min="0"
+                max="60"
+                data-config="plateauMinutes"
                 required
               />
             </dd>
@@ -995,6 +1092,14 @@
           segments. Curve tolerance is the maximum acceptable error when
           performing this approximation. Set to a higher value to speed up the
           nesting process, and a lower value when more precision is required.
+        </div>
+
+        <div class="config_explain" id="explain_exportCurveTolerance">
+          <h1>Export curve tolerance</h1>
+          How far a cut path may stray from the design when the file is only
+          line segments, in the same units as the sheet. 0.005 inch is a tight
+          shop default. 0 keeps every vertex. Real arcs and beziers are written
+          as curves either way, so a smooth edge does not become a saw tooth.
         </div>
 
         <div class="config_explain" id="explain_endpointTolerance">
@@ -3344,6 +3449,60 @@
           tried, but reduces the ability of the algorithm to build upon previous
           successes. Increase this value if there are obvious arrangements that
           it does not seem to explore.
+        </div>
+
+        <div class="config_explain" id="explain_stopOnPlateau">
+          <h1>Stop when plateaued</h1>
+          When this is on, nesting stops by itself once the best layout stops
+          getting better. Otherwise the search keeps running until you click
+          Stop, even after the placements have leveled off. Uncheck it to
+          search until you stop it by hand. After an automatic stop, Start nest
+          continues from the best result so far.
+        </div>
+
+        <div class="config_explain" id="explain_plateauGenerations">
+          <h1>Generations without improvement</h1>
+          Stop after this many genetic generations with no better nest. 10 is a
+          solid default for shop work. Set to 0 to ignore the generation count
+          and only use the time limit. If both limits are 0, nesting runs until
+          you click Stop.
+        </div>
+
+        <div class="config_explain" id="explain_useOnlineConverter">
+          <h1>Online converter</h1>
+          DXF files are read on this computer. DWG files are converted with the
+          ODA File Converter when it is installed. Leave this off and nesting
+          works with no internet. Turn it on only if a local read fails, or if
+          you still need PS or EPS, which go to the conversion server. A failed
+          server request shows the status code, not the file you uploaded.
+        </div>
+
+        <div class="config_explain" id="explain_defaultWorkFolder">
+          <h1>Default work folder</h1>
+          File dialogs open here until you import a drawing. After an import,
+          they open in that drawing's folder for the rest of the session. A
+          DWG conversion also leaves <i>name</i>.converted.dxf in that folder
+          and does not overwrite the original. If this folder is missing, dialogs
+          open in your home directory. Leave it blank in a fresh install.
+        </div>
+
+        <div class="config_explain" id="explain_odaFileConverterPath">
+          <h1>ODA File Converter path</h1>
+          DWG import runs the free ODA File Converter on this computer. Deepnest
+          does not include that program. Leave the path blank to look in
+          /usr/bin, /opt/ODAFileConverter, ~/Applications, and ~/Downloads. If
+          ODA is not installed and dwg2dxf is not on the PATH, import stops with
+          a short message unless the online converter is turned on.
+        </div>
+
+        <div class="config_explain" id="explain_plateauMinutes">
+          <h1>Minutes without improvement</h1>
+          Stop if the best fitness does not improve for this many minutes.
+          Decimals are allowed, so 0.5 is 30 seconds. The clock starts after
+          the first full generation finishes, so a slow first pass is not cut
+          off. 1 minute is the default. Set to 0 to ignore elapsed time and
+          only use the generation limit. An older saved setting in seconds is
+          converted once, so 60 seconds becomes 1 minute.
         </div>
       </div>
 

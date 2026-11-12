@@ -13,6 +13,8 @@ import { devices, defineConfig } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./tests",
+  // Node's test runner owns *.test.cjs. Playwright runs the Electron spec.
+  testIgnore: "**/*.test.cjs",
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */

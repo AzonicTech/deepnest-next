@@ -7,6 +7,10 @@ import { Point } from '../build/util/point.js';
 import { HullPolygon } from '../build/util/HullPolygon.js';
 
 const { simplifyPolygon: simplifyPoly } = require("@deepnest/svg-preprocessor");
+const NestPlateau = require("./util/plateau.js");
+const NestDistribution = require("./util/distribution.js");
+const MaxOutResult = require("./util/max-out-result.js");
+require("./util/export-geometry.js");
 
 var config = {
   clipperScale: 10000000,
@@ -22,6 +26,11 @@ var config = {
   scale: 72,
   simplify: false,
   overlapTolerance: 0.0001,
+  // Stop on its own once the best layout stops improving. Either limit can
+  // fire. 0 disables that limit. stopOnPlateau false runs until Stop.
+  stopOnPlateau: true,
+  plateauGenerations: 10,
+  plateauMinutes: 1,
 };
 
 export class DeepNest {
@@ -46,10 +55,31 @@ export class DeepNest {
 
     this.progressCallback = null;
     this.displayCallback = null;
+    this.doneCallback = null;
     // a running list of placements
     this.nests = [];
 
     this.eventEmitter = eventEmitter;
+    this.nestStatus = "";
+    this.plateau = null;
+    this.cachedSheets = null;
+    // True once the current finished generation has been handed to the
+    // plateau detector. Prevents a resume from counting that generation twice.
+    this.generationReported = false;
+    this.nestResultDirty = false;
+    this._responseBound = false;
+    // Part-count mode packs with gravity for that run only.
+    this.compactPlacement = false;
+    // Order and rotations that are already known to fit, used to seed the GA.
+    this.distributionSeed = null;
+    // Max-out keeps adding a set after each full placement until one does not fit.
+    this.maxOut = null;
+    this.maxOutLead = "";
+    this._workerParts = null;
+    this._maxOutStepping = false;
+    // When this changes, the current population is for a different mix.
+    this.distributionSignature = null;
+    this.bindResponseListener();
   }
 
   importsvg(
@@ -556,6 +586,30 @@ export class DeepNest {
       config.scale = parseFloat(c.scale);
     }
 
+    if (c.stopOnPlateau === true || c.stopOnPlateau === false) {
+      config.stopOnPlateau = !!c.stopOnPlateau;
+    }
+
+    if ("plateauGenerations" in c) {
+      var plateauGens = parseInt(c.plateauGenerations, 10);
+      if (!isNaN(plateauGens) && plateauGens >= 0) {
+        config.plateauGenerations = plateauGens;
+      }
+    }
+
+    if ("plateauMinutes" in c || "plateauSeconds" in c) {
+      var timeBag = {};
+      if ("plateauMinutes" in c) timeBag.plateauMinutes = c.plateauMinutes;
+      if ("plateauSeconds" in c) timeBag.plateauSeconds = c.plateauSeconds;
+      var migratedTime = NestPlateau.migrateSavedConfig(timeBag);
+      if (migratedTime && "plateauMinutes" in migratedTime) {
+        var plateauMins = parseFloat(migratedTime.plateauMinutes);
+        if (!isNaN(plateauMins) && plateauMins >= 0) {
+          config.plateauMinutes = plateauMins;
+        }
+      }
+    }
+
     window.SvgParser.config({
       tolerance: config.curveTolerance,
       endpointTolerance: c.endpointTolerance,
@@ -564,6 +618,20 @@ export class DeepNest {
     //nfpCache = {};
     //binPolygon = null;
     this.GA = null;
+    this.generationReported = false;
+    this.cachedSheets = null;
+    if (this.plateau) {
+      this.plateau.configure({
+        enabled: !!config.stopOnPlateau,
+        plateauGenerations: config.plateauGenerations,
+        plateauMinutes: config.plateauMinutes,
+        minGenerations: 1,
+      });
+      this.plateau.reset();
+    }
+    if (this.eventEmitter && config.threads) {
+      this.eventEmitter.send("background-set-threads", config.threads);
+    }
 
     return config;
   };
@@ -978,36 +1046,10 @@ export class DeepNest {
     return parts;
   };
 
-  cloneTree(tree) {
-    var newtree = [];
-    tree.forEach(function (t) {
-      newtree.push({ x: t.x, y: t.y, exact: t.exact });
-    });
-
-    var self = this;
-    if (tree.children && tree.children.length > 0) {
-      newtree.children = [];
-      tree.children.forEach(function (c) {
-        newtree.children.push(self.cloneTree(c));
-      });
-    }
-
-    return newtree;
-  };
-
-  // progressCallback is called when progress is made
-  // displayCallback is called when a new placement has been made
-  start(p, d) {
-    this.progressCallback = p;
-    this.displayCallback = d;
-
+  // Offset clones of the current parts, same path start() uses so a
+  // fit measurement sees the spacing the nest will use.
+  buildWorkingCopies() {
     var parts = [];
-
-    /*while(this.nests.length > 0){
-      this.nests.pop();
-    }*/
-
-    // send only bare essentials through ipc
     for (var i = 0; i < this.parts.length; i++) {
       parts.push({
         quantity: this.parts[i].quantity,
@@ -1036,7 +1078,6 @@ export class DeepNest {
       }
     }
 
-    // offset tree recursively
     function offsetTree(t, offset, offsetFunction, simpleFunction, inside) {
       var simple = t;
       if (simpleFunction) {
@@ -1049,9 +1090,6 @@ export class DeepNest {
       }
 
       if (offsetpaths.length > 0) {
-        //var cleaned = cleanFunction(offsetpaths[0]);
-
-        // replace array items in place
         Array.prototype.splice.apply(t, [0, t.length].concat(offsetpaths[0]));
       }
 
@@ -1078,85 +1116,528 @@ export class DeepNest {
       }
     }
 
-    var self = this;
-    this.working = true;
+    return parts;
+  };
 
-    if (!this.workerTimer) {
-      this.workerTimer = setInterval(function () {
-        self.launchWorkers.call(
-          self,
-          parts,
-          config,
-          this.progressCallback,
-          this.displayCallback
-        );
-        //progressCallback(progress);
-      }, 100);
+  nestShapes() {
+    var copies = this.buildWorkingCopies();
+    var self = this;
+    return copies.map(function (part, index) {
+      var bounds = GeometryUtil.getPolygonBounds(part.polygontree);
+      var original = self.parts[index] || {};
+      return {
+        index: index,
+        sheet: !!part.sheet,
+        quantity: part.quantity,
+        filename: part.filename || "",
+        percent: original.distributionPercent == null ? null : original.distributionPercent,
+        width: bounds.width,
+        height: bounds.height,
+        area: bounds.width * bounds.height,
+        polygon: serializePolygon(part.polygontree),
+      };
+    });
+
+    function serializePolygon(tree) {
+      var points = [];
+      for (var i = 0; i < tree.length; i++) {
+        points.push({ x: tree[i].x, y: tree[i].y });
+      }
+      var children = [];
+      if (tree.children && tree.children.length > 0) {
+        for (var c = 0; c < tree.children.length; c++) {
+          children.push(serializePolygon(tree.children[c]));
+        }
+      }
+      return { points: points, children: children };
+    }
+  };
+
+  placementConfig() {
+    return {
+      clipperScale: config.clipperScale,
+      curveTolerance: config.curveTolerance,
+      spacing: config.spacing,
+      rotations: config.rotations,
+      placementType: config.placementType,
+      mergeLines: config.mergeLines,
+      timeRatio: config.timeRatio,
+      scale: config.scale,
+      simplify: config.simplify,
+      overlapTolerance: config.overlapTolerance,
+    };
+  };
+
+  // A new mix must not resume a population built for different quantities.
+  noteDistribution(signature) {
+    if (this.distributionSignature !== signature) {
+      this.GA = null;
+      this.cachedSheets = null;
+      this.generationReported = false;
+      this.distributionSignature = signature;
+      this.clearMaxOut();
+    }
+  };
+
+  clearMaxOut() {
+    this.maxOut = null;
+    this.maxOutLead = "";
+  };
+
+  armMaxOut(spec) {
+    if (!spec || !(spec.startLevel > 0)) {
+      this.clearMaxOut();
+      return;
+    }
+    var plan = NestDistribution.maxOutSearch({
+      even: spec.even !== false,
+      rotations: spec.rotations,
+      items: spec.items || [],
+    });
+    var runner = NestDistribution.createMaxOutEscalation(plan, { startLevel: spec.startLevel });
+    var first = runner.begin();
+    if (!first || first.action !== "try") {
+      this.clearMaxOut();
+      return;
+    }
+    this.maxOut = {
+      active: true,
+      runner: runner,
+      rotationByIndex: plan.rotationByIndex || {},
+      fullNest: null,
+      lastOrder: null,
+      lastCounts: null,
+    };
+    this.maxOutLead = first.status;
+  };
+
+  currentPartQuantities() {
+    return this.parts.map(function (part) {
+      return part.sheet ? 0 : part.quantity;
+    });
+  };
+
+  writePartQuantities(quantities) {
+    MaxOutResult.writeQuantities(this.parts, quantities);
+  };
+
+  // The results panel keeps this array. Replacing it leaves the panel on the old list.
+  replaceNests(list) {
+    var nests = this.nests;
+    var next = list || [];
+    nests.splice(0, nests.length);
+    for (var i = 0; i < next.length; i++) nests.push(next[i]);
+    this.nestResultDirty = true;
+    this.forceNestDisplay = true;
+  };
+
+  placedInNest(nest) {
+    var count = 0;
+    var placements = (nest && nest.placements) || [];
+    for (var i = 0; i < placements.length; i++) {
+      count += (placements[i].sheetplacements || []).length;
+    }
+    return count;
+  };
+
+  expectedPartCount() {
+    var total = 0;
+    for (var i = 0; i < this.parts.length; i++) {
+      if (!this.parts[i].sheet) total += this.parts[i].quantity || 0;
+    }
+    return total;
+  };
+
+  allPartsPlaced() {
+    var expected = this.expectedPartCount();
+    if (!(expected > 0) || !this.nests.length) return false;
+    return this.placedInNest(this.nests[0]) >= expected;
+  };
+
+  captureBestOrder() {
+    if (!this.GA || !this.GA.population) return null;
+    var best = null;
+    for (var i = 0; i < this.GA.population.length; i++) {
+      var individual = this.GA.population[i];
+      if (typeof individual.fitness !== "number" || !isFinite(individual.fitness)) continue;
+      if (!best || individual.fitness < best.fitness) best = individual;
+    }
+    if (!best || !best.placement) return null;
+    return best.placement.map(function (poly) {
+      return poly.source;
+    });
+  };
+
+  extendPlacementOrder(order, oldCounts, newCounts) {
+    if (!order || !oldCounts || !newCounts) return null;
+    var seq = order.slice();
+    for (var i = 0; i < newCounts.length; i++) {
+      var extra = Math.floor(newCounts[i] || 0) - Math.floor(oldCounts[i] || 0);
+      for (var n = 0; n < extra; n++) seq.push(i);
+    }
+    return seq;
+  };
+
+  syncMaxOutClock(fresh) {
+    if (!this.maxOut || !this.maxOut.active) {
+      this.maxOutClock = null;
+      return;
+    }
+    if (!this.maxOutClock) this.maxOutClock = NestPlateau.create();
+    this.maxOutClock.configure(
+      NestPlateau.stepTriggerConfig({
+        stopOnPlateau: config.stopOnPlateau,
+        plateauGenerations: config.plateauGenerations,
+        plateauMinutes: config.plateauMinutes,
+      })
+    );
+    if (fresh) this.maxOutClock.reset();
+    else this.maxOutClock.resume();
+  };
+
+  tickMaxOutResult(fitness) {
+    if (!this.maxOutClock || !this.maxOut || !this.maxOut.active) return null;
+    return this.maxOutClock.onResult(fitness);
+  };
+
+  tickMaxOutGeneration(fitnesses) {
+    if (!this.maxOutClock || !this.maxOut || !this.maxOut.active) return null;
+    return this.maxOutClock.onGeneration(fitnesses);
+  };
+
+  publishNestStatus(plateauText) {
+    var lead = this.maxOutLead || "";
+    var next = lead && plateauText ? lead + " · " + plateauText : lead || plateauText || "";
+    if (next === this.nestStatus) return false;
+    this.nestStatus = next;
+    return true;
+  };
+
+  pauseWorkers() {
+    this.working = false;
+    if (this.GA && this.GA.population && this.GA.population.length > 0) {
+      this.GA.population.forEach(function (individual) {
+        individual.processing = false;
+      });
+    }
+    if (this.workerTimer) {
+      clearInterval(this.workerTimer);
+      this.workerTimer = null;
+    }
+    if (this.eventEmitter) {
+      this.eventEmitter.send("background-stop");
+    }
+  };
+
+  ensureWorkerTimer() {
+    var self = this;
+    if (this.workerTimer) return;
+    this.workerTimer = setInterval(function () {
+      if (!self.working) return;
+      self.launchWorkers.call(
+        self,
+        self._workerParts,
+        config,
+        self.progressCallback,
+        self.displayCallback
+      );
+    }, 100);
+  };
+
+  // True when max-out started another quantity instead of ending the nest.
+  advanceMaxOut() {
+    if (!this.maxOut || !this.maxOut.active) return false;
+    var countsBefore = this.currentPartQuantities();
+    var orderBefore = this.captureBestOrder();
+    var complete = this.allPartsPlaced();
+    var saved = null;
+    if (complete && this.nests[0]) {
+      saved = MaxOutResult.rememberFullFit(this.nests[0], countsBefore);
+    }
+    var step = this.maxOut.runner.onResult(complete);
+    if (complete && saved) {
+      this.maxOut.fullFit = saved;
+      this.maxOut.fullNest = saved.nest;
+      this.maxOut.lastOrder = orderBefore ? orderBefore.slice() : null;
+      this.maxOut.lastCounts = countsBefore.slice();
+    }
+    if (!step || step.action === "done") {
+      this.finishMaxOut(step);
+      return false;
+    }
+    this.beginMaxOutLevel(step);
+    return true;
+  };
+
+  beginMaxOutLevel(step) {
+    this._maxOutStepping = true;
+    this.pauseWorkers();
+    this._maxOutStepping = false;
+    this.writePartQuantities(step.quantities);
+    var sequence = step.sequence;
+    if (this.maxOut.lastOrder && this.maxOut.lastCounts) {
+      var extended = this.extendPlacementOrder(this.maxOut.lastOrder, this.maxOut.lastCounts, step.quantities);
+      if (extended && extended.length) sequence = extended;
+    }
+    this.distributionSeed = {
+      sequence: sequence,
+      rotationBySource: this.maxOut.rotationByIndex,
+    };
+    this.GA = null;
+    this.cachedSheets = null;
+    this.generationReported = false;
+    this.replaceNests([]);
+    if (this.plateau) this.plateau.reset();
+    if (this.maxOutClock) this.maxOutClock.reset();
+    this.maxOutLead = step.status;
+    this.publishNestStatus("");
+    this._workerParts = this.buildWorkingCopies();
+    this.working = true;
+    this.ensureWorkerTimer();
+    if (this.displayCallback) this.displayCallback();
+  };
+
+  finishMaxOut(step) {
+    if (!this.maxOut) return;
+    var saved = this.maxOut.fullFit;
+    var showingSavedCount =
+      step &&
+      step.totalParts > 0 &&
+      this.expectedPartCount() === step.totalParts &&
+      this.allPartsPlaced();
+    if (step && step.keepCurrent) {
+      // Stopped before any count placed fully. Leave the quantities as they are.
+    } else if (saved && !showingSavedCount) {
+      MaxOutResult.restoreFullFit(this.nests, this.parts, saved);
+      this.nestResultDirty = true;
+      this.forceNestDisplay = true;
+    } else if (step && step.quantities) {
+      this.writePartQuantities(step.quantities);
+    }
+    this.GA = null;
+    this.maxOutLead = step && step.status ? step.status : this.maxOutLead;
+    this.maxOut.active = false;
+    this.nestStatus = this.maxOutLead;
+  };
+
+  finishMaxOutFromUser() {
+    if (!this.maxOut || !this.maxOut.active) return;
+    if (this.allPartsPlaced()) this.maxOut.runner.noteFit();
+    var done = this.maxOut.runner.stop();
+    this.finishMaxOut(done);
+    if (this.displayCallback) this.displayCallback();
+  };
+
+  cloneTree(tree) {
+    var newtree = [];
+    tree.forEach(function (t) {
+      newtree.push({ x: t.x, y: t.y, exact: t.exact });
+    });
+
+    var self = this;
+    if (tree.children && tree.children.length > 0) {
+      newtree.children = [];
+      tree.children.forEach(function (c) {
+        newtree.children.push(self.cloneTree(c));
+      });
     }
 
-    this.eventEmitter.on("background-response", (event, payload) => {
-      this.eventEmitter.send("setPlacements", payload);
-      console.log("ipc response", payload);
-      if (!this.GA) {
-        // user might have quit while we're away
-        return;
-      }
-      this.GA.population[payload.index].processing = false;
-      this.GA.population[payload.index].fitness = payload.fitness;
+    return newtree;
+  };
 
-      // render placement
-      if (this.nests.length == 0 || this.nests[0].fitness > payload.fitness) {
-        this.nests.unshift(payload);
+  // progressCallback is called when progress is made
+  // displayCallback is called when a new placement has been made
+  // doneCallback is called when nesting auto-stops (plateau)
+  start(p, d, done) {
+    this.progressCallback = p;
+    this.displayCallback = d;
+    this.doneCallback = done || null;
+    this.cachedSheets = null;
 
-        // Check if we should keep a long list (more than 100 results)
-        const keepLongList = process.env.DEEPNEST_LONGLIST;
+    this._workerParts = this.buildWorkingCopies();
+    this.working = true;
 
-        if (keepLongList) {
-          // Keep up to 100 results without sorting
-          if (this.nests.length > 100) {
-            this.nests.pop();
-          }
-        } else {
-          // Original behavior - keep only top 10 by fitness
-          if (this.nests.length > 10) {
-            this.nests.pop();
-          }
-        }
-
-        if (this.displayCallback) {
-          this.displayCallback();
-        }
-      } else if (process.env.DEEPNEST_LONGLIST) {
-        // With DEEPNEST_LONGLIST, we add the result to the list regardless of fitness
-        // Just make sure it's not worse than the worst result we already have
-        const worstFitness = Math.min(...this.nests.map(item => item.fitness));
-        if (this.nests.length < 100 || payload.fitness > worstFitness) {
-          // Find where to insert this result to maintain insertion order
-          this.nests.push(payload);
-
-          // If we exceeded 100 results, remove the worst one
-          if (this.nests.length > 100) {
-            // Find the worst fitness
-            let worstIndex = 0;
-            let worstFitness = this.nests[0].fitness;
-
-            for (let i = 1; i < this.nests.length; i++) {
-              if (this.nests[i].fitness > worstFitness) {
-                worstIndex = i;
-                worstFitness = this.nests[i].fitness;
-              }
-            }
-
-            // Remove the worst fitness item
-            this.nests.splice(worstIndex, 1);
-          }
-
-          if (this.displayCallback) {
-            this.displayCallback();
-          }
-        }
-      }
+    if (!this.plateau) {
+      this.plateau = NestPlateau.create();
+    }
+    this.plateau.configure({
+      enabled: !!config.stopOnPlateau,
+      plateauGenerations: config.plateauGenerations,
+      plateauMinutes: config.plateauMinutes,
+      minGenerations: 1,
     });
+    // A fresh search clears the stall clock. Restarting after an auto-stop
+    // keeps the GA (and the best nest) and only clears the stall clocks.
+    if (this.GA === null) {
+      this.plateau.reset();
+      this.generationReported = false;
+    } else {
+      this.plateau.resume();
+    }
+    this.syncMaxOutClock(this.GA === null);
+    this.publishNestStatus(this.plateau.statusText());
+
+    if (this.eventEmitter) {
+      this.eventEmitter.send("background-set-threads", config.threads);
+    }
+
+    this.ensureWorkerTimer();
+  };
+
+  bindResponseListener() {
+    if (this._responseBound || !this.eventEmitter || !this.eventEmitter.on) {
+      return;
+    }
+    this._responseBound = true;
+    var self = this;
+    this.eventEmitter.on("background-response", function (event, payload) {
+      self.handleBackgroundResponse(payload);
+    });
+  };
+
+  handleBackgroundResponse(payload) {
+    if (this.eventEmitter) {
+      this.eventEmitter.send("setPlacements", payload);
+    }
+    if (!payload || !this.GA || !this.GA.population || !this.GA.population[payload.index]) {
+      // user might have quit while we're away
+      return;
+    }
+    // A result can still be in flight after Stop or an auto-stop. Keep a
+    // better layout for export, but do not write onto the population: resume
+    // may already have evolved a new generation at this index.
+    if (!this.working) {
+      if (this.recordNest(payload) && this.displayCallback) {
+        this.displayCallback();
+      }
+      return;
+    }
+    this.GA.population[payload.index].processing = false;
+    this.GA.population[payload.index].fitness = payload.fitness;
+
+    var changed = this.recordNest(payload);
+
+    if (this.plateau) {
+      var decision = this.plateau.onResult(payload.fitness);
+      var stepDecision = this.tickMaxOutResult(payload.fitness);
+      this.publishNestStatus(this.plateau.statusText());
+      var stopDecision = stepDecision && stepDecision.stop ? stepDecision : decision;
+      if (stopDecision && stopDecision.stop && this.working) {
+        var stillWorking = this.GA.population.some(function (ind) {
+          return !!ind.processing;
+        });
+        if (!stillWorking) {
+          // The time limit can trip on the result that finishes a generation,
+          // before launchWorkers gets to count it. Record that generation now
+          // so Start nest evolves forward instead of scoring it a second time.
+          var generationDecision = this.reportFinishedGeneration();
+          this.haltForPlateau(
+            generationDecision && generationDecision.stop ? generationDecision : stopDecision
+          );
+          return;
+        }
+      }
+    }
+
+    if ((changed || this.plateau) && this.displayCallback) {
+      this.displayCallback();
+    }
+  };
+
+  recordNest(payload) {
+    var changed = false;
+    if (this.nests.length == 0 || this.nests[0].fitness > payload.fitness) {
+      this.nests.unshift(payload);
+      changed = true;
+
+      // Check if we should keep a long list (more than 100 results)
+      const keepLongList = process.env.DEEPNEST_LONGLIST;
+
+      if (keepLongList) {
+        // Keep up to 100 results without sorting
+        if (this.nests.length > 100) {
+          this.nests.pop();
+        }
+      } else {
+        // Original behavior - keep only top 10 by fitness
+        if (this.nests.length > 10) {
+          this.nests.pop();
+        }
+      }
+    } else if (process.env.DEEPNEST_LONGLIST) {
+      // With DEEPNEST_LONGLIST, we add the result to the list regardless of fitness
+      // Just make sure it's not worse than the worst result we already have
+      const worstFitness = Math.min(...this.nests.map(item => item.fitness));
+      if (this.nests.length < 100 || payload.fitness > worstFitness) {
+        // Find where to insert this result to maintain insertion order
+        this.nests.push(payload);
+        changed = true;
+
+        // If we exceeded 100 results, remove the worst one
+        if (this.nests.length > 100) {
+          // Find the worst fitness
+          let worstIndex = 0;
+          let worstFitness = this.nests[0].fitness;
+
+          for (let i = 1; i < this.nests.length; i++) {
+            if (this.nests[i].fitness > worstFitness) {
+              worstIndex = i;
+              worstFitness = this.nests[i].fitness;
+            }
+          }
+
+          // Remove the worst fitness item
+          this.nests.splice(worstIndex, 1);
+        }
+      }
+    }
+
+    if (changed) {
+      this.nestResultDirty = true;
+    }
+    return changed;
+  };
+
+  // Count a fully evaluated generation one time. Returns the plateau
+  // decision, or null when the generation is incomplete or already counted.
+  reportFinishedGeneration() {
+    if (!this.plateau || !this.GA || !this.GA.population || this.generationReported) {
+      return null;
+    }
+    var generationFitness = [];
+    for (var i = 0; i < this.GA.population.length; i++) {
+      var fitness = this.GA.population[i].fitness;
+      if (typeof fitness !== "number" || !isFinite(fitness)) {
+        return null;
+      }
+      generationFitness.push(fitness);
+    }
+    this.generationReported = true;
+    var decision = this.plateau.onGeneration(generationFitness);
+    var stepDecision = this.tickMaxOutGeneration(generationFitness);
+    this.publishNestStatus(this.plateau.statusText());
+    if (stepDecision && stepDecision.stop) return stepDecision;
+    return decision;
+  };
+
+  haltForPlateau(decision) {
+    if (!this.working) {
+      return;
+    }
+    if (this.advanceMaxOut()) {
+      return;
+    }
+    this.stop();
+    if (this.eventEmitter) {
+      this.eventEmitter.send("background-stop");
+    }
+    this.nestStatus = this.maxOutLead || NestPlateau.formatStopMessage(decision);
+    if (this.displayCallback) {
+      this.displayCallback();
+    }
+    if (this.doneCallback) {
+      this.doneCallback(decision);
+    }
   };
 
   padNumber(n, width, z) {
@@ -1171,24 +1652,8 @@ export class DeepNest {
     progressCallback,
     displayCallback
   ) {
-    function shuffle(array) {
-      var currentIndex = array.length,
-        temporaryValue,
-        randomIndex;
-
-      // While there remain elements to shuffle...
-      while (0 !== currentIndex) {
-        // Pick a remaining element...
-        randomIndex = Math.floor(Math.random() * currentIndex);
-        currentIndex -= 1;
-
-        // And swap it with the current element.
-        temporaryValue = array[currentIndex];
-        array[currentIndex] = array[randomIndex];
-        array[randomIndex] = temporaryValue;
-      }
-
-      return array;
+    if (!this.working) {
+      return;
     }
 
     var i, j;
@@ -1212,63 +1677,149 @@ export class DeepNest {
         }
       }
 
-      // seed with decreasing area
-      adam.sort(function (a, b) {
-        return (
-          Math.abs(GeometryUtil.polygonArea(b)) -
-          Math.abs(GeometryUtil.polygonArea(a))
-        );
-      });
+      if (this.distributionSeed && this.distributionSeed.sequence && this.distributionSeed.sequence.length) {
+        var buckets = {};
+        for (var s = 0; s < adam.length; s++) {
+          var source = adam[s].source;
+          if (!buckets[source]) buckets[source] = [];
+          buckets[source].push(adam[s]);
+        }
+        var ordered = [];
+        var sequence = this.distributionSeed.sequence;
+        for (var s = 0; s < sequence.length; s++) {
+          var bucket = buckets[sequence[s]];
+          if (bucket && bucket.length) ordered.push(bucket.shift());
+        }
+        Object.keys(buckets).forEach(function (source) {
+          buckets[source].forEach(function (poly) {
+            ordered.push(poly);
+          });
+        });
+        adam = ordered;
+      } else {
+        // seed with decreasing area
+        adam.sort(function (a, b) {
+          return (
+            Math.abs(GeometryUtil.polygonArea(b)) -
+            Math.abs(GeometryUtil.polygonArea(a))
+          );
+        });
+      }
 
       this.GA = new GeneticAlgorithm(adam, config);
+      if (this.distributionSeed && this.distributionSeed.rotationBySource) {
+        var rotationBySource = this.distributionSeed.rotationBySource;
+        var seeded = this.GA.population[0];
+        seeded.rotation = seeded.placement.map(function (poly) {
+          var angle = rotationBySource[poly.source];
+          return typeof angle === "number" && isFinite(angle) ? angle : 0;
+        });
+        var seededPop = [seeded];
+        while (seededPop.length < this.GA.population.length) {
+          seededPop.push(this.GA.mutate(seeded));
+        }
+        this.GA.population = seededPop;
+      }
+      this.generationReported = false;
       //console.log(GA.population[1].placement);
+    }
+
+    function isEvaluated(individual) {
+      return typeof individual.fitness === "number" && isFinite(individual.fitness);
     }
 
     // check if current generation is finished
     var finished = true;
-    for (var i = 0; i < this.GA.population.length; i++) {
-      if (!this.GA.population[i].fitness) {
+    for (i = 0; i < this.GA.population.length; i++) {
+      if (!isEvaluated(this.GA.population[i])) {
         finished = false;
         break;
       }
     }
 
     if (finished) {
-      console.log("new generation!");
+      // Count this generation once. A resume after auto-stop must evolve
+      // forward instead of feeding the same finished population in again.
+      if (!this.generationReported) {
+        var decision = this.reportFinishedGeneration();
+        if (decision && displayCallback) {
+          displayCallback();
+        }
+        if (decision && decision.stop) {
+          this.haltForPlateau(decision);
+          return;
+        }
+      }
+      this.generationReported = false;
       // all individuals have been evaluated, start next generation
       this.GA.generation();
+    }
+
+    if (this.plateau) {
+      var timeDecision = this.plateau.evaluate();
+      var stepTime =
+        this.maxOutClock && this.maxOut && this.maxOut.active ? this.maxOutClock.evaluate() : null;
+      var nextStatus = this.plateau.statusText();
+      if (this.publishNestStatus(nextStatus)) {
+        if (displayCallback) {
+          displayCallback();
+        }
+      }
+      var stopDecision = stepTime && stepTime.stop ? stepTime : timeDecision;
+      if (stopDecision && stopDecision.stop) {
+        var inflight = this.GA.population.some(function (individual) {
+          return !!individual.processing;
+        });
+        if (!inflight) {
+          this.haltForPlateau(stopDecision);
+        }
+        return;
+      }
     }
 
     var running = this.GA.population.filter(function (p) {
       return !!p.processing;
     }).length;
 
-    var sheets = [];
-    var sheetids = [];
-    var sheetsources = [];
-    var sheetchildren = [];
-    var sid = 0;
-
-    for (var i = 0; i < parts.length; i++) {
-      if (parts[i].sheet) {
-        var poly = parts[i].polygontree;
-        for (var j = 0; j < parts[i].quantity; j++) {
-          sheets.push(poly);
-          sheetids.push(this.padNumber(sid, 4) + '-' + this.padNumber(j, 4));
-          sheetsources.push(i);
-          sheetchildren.push(poly.children);
-        }
-        sid++;
-      }
+    var threadLimit = Math.max(1, Math.min(8, parseInt(config.threads, 10) || 1));
+    if (running >= threadLimit) {
+      return;
     }
 
-    for (var i = 0; i < this.GA.population.length; i++) {
-      //if(running < config.threads && !GA.population[i].processing && !GA.population[i].fitness){
-      // only one background window now...
+    if (!this.cachedSheets) {
+      var sheets = [];
+      var sheetids = [];
+      var sheetsources = [];
+      var sheetchildren = [];
+      var sid = 0;
+
+      for (i = 0; i < parts.length; i++) {
+        if (parts[i].sheet) {
+          var poly = parts[i].polygontree;
+          for (j = 0; j < parts[i].quantity; j++) {
+            sheets.push(poly);
+            sheetids.push(this.padNumber(sid, 4) + "-" + this.padNumber(j, 4));
+            sheetsources.push(i);
+            sheetchildren.push(poly.children);
+          }
+          sid++;
+        }
+      }
+      this.cachedSheets = {
+        sheets: sheets,
+        sheetids: sheetids,
+        sheetsources: sheetsources,
+        sheetchildren: sheetchildren,
+      };
+    }
+
+    var sheetPack = this.cachedSheets;
+
+    for (i = 0; i < this.GA.population.length; i++) {
       if (
-        running < 1 &&
+        running < threadLimit &&
         !this.GA.population[i].processing &&
-        !this.GA.population[i].fitness
+        !isEvaluated(this.GA.population[i])
       ) {
         this.GA.population[i].processing = true;
 
@@ -1289,14 +1840,19 @@ export class DeepNest {
           filenames[j] = filename;
         }
 
+        var workerConfig = config;
+        if (this.compactPlacement) {
+          workerConfig = Object.assign({}, config, { placementType: "gravity" });
+        }
+
         this.eventEmitter.send("background-start", {
           index: i,
-          sheets: sheets,
-          sheetids: sheetids,
-          sheetsources: sheetsources,
-          sheetchildren: sheetchildren,
+          sheets: sheetPack.sheets,
+          sheetids: sheetPack.sheetids,
+          sheetsources: sheetPack.sheetsources,
+          sheetchildren: sheetPack.sheetchildren,
           individual: this.GA.population[i],
-          config: config,
+          config: workerConfig,
           ids: ids,
           sources: sources,
           children: children,
@@ -1485,6 +2041,9 @@ export class DeepNest {
   };
 
   stop() {
+    if (this.maxOut && this.maxOut.active && !this._maxOutStepping) {
+      this.finishMaxOutFromUser();
+    }
     this.working = false;
     if (this.GA && this.GA.population && this.GA.population.length > 0) {
       this.GA.population.forEach(function (i) {
@@ -1499,11 +2058,23 @@ export class DeepNest {
 
   reset() {
     this.GA = null;
+    this.cachedSheets = null;
+    this.generationReported = false;
+    this.nestResultDirty = false;
+    if (this.plateau) {
+      this.plateau.reset();
+    }
+    this.nestStatus = "";
+    this.clearMaxOut();
+    this.compactPlacement = false;
+    this.distributionSeed = null;
+    this.distributionSignature = null;
     while (this.nests.length > 0) {
       this.nests.pop();
     }
     this.progressCallback = null;
     this.displayCallback = null;
+    this.doneCallback = null;
   };
 }
 

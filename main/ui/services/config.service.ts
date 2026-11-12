@@ -26,6 +26,7 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
   scale: 72, // actual stored value will be in units/inch
   spacing: 0,
   curveTolerance: 0.72, // store distances in native units
+  exportCurveTolerance: 0.36, // 0.005 inch at 72 SVG units/inch
   clipperScale: 10000000,
   rotations: 4,
   threads: 4,
@@ -35,10 +36,16 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
   mergeLines: true, // whether to merge lines
   timeRatio: 0.5, // ratio of material reduction to laser time. 0 = optimize material only, 1 = optimize laser time only
   simplify: false,
+  stopOnPlateau: true,
+  plateauGenerations: 10,
+  plateauMinutes: 1,
   dxfImportScale: 1,
   dxfExportScale: 1,
   endpointTolerance: 0.36,
   conversionServer: DEFAULT_CONVERSION_SERVER,
+  useOnlineConverter: false,
+  odaFileConverterPath: "",
+  defaultWorkFolder: "",
   useSvgPreProcessor: false,
   useQuantityFromFileName: false,
   exportWithSheetBoundboarders: false,
@@ -53,11 +60,13 @@ export const DEFAULT_CONFIG: Readonly<UIConfig> = {
 export const BOOLEAN_CONFIG_KEYS: ReadonlyArray<keyof UIConfig> = [
   "mergeLines",
   "simplify",
+  "stopOnPlateau",
   "useSvgPreProcessor",
   "useQuantityFromFileName",
   "exportWithSheetBoundboarders",
   "exportWithSheetsSpace",
   "showNotifications",
+  "useOnlineConverter",
 ];
 
 /**
@@ -80,11 +89,15 @@ export class ConfigService implements ConfigObject {
   scale: number;
   spacing: number;
   curveTolerance: number;
+  exportCurveTolerance: number;
   clipperScale: number;
   rotations: number;
   threads: number;
   populationSize: number;
   mutationRate: number;
+  stopOnPlateau: boolean;
+  plateauGenerations: number;
+  plateauMinutes: number;
   placementType: PlacementType;
   mergeLines: boolean;
   timeRatio: number;
@@ -99,6 +112,9 @@ export class ConfigService implements ConfigObject {
   exportWithSheetsSpace: boolean;
   exportWithSheetsSpaceValue: number;
   showNotifications: boolean;
+  useOnlineConverter: boolean;
+  odaFileConverterPath: string;
+  defaultWorkFolder: string;
   access_token?: string;
   id_token?: string;
 
@@ -115,11 +131,15 @@ export class ConfigService implements ConfigObject {
     this.scale = this.config.scale;
     this.spacing = this.config.spacing;
     this.curveTolerance = this.config.curveTolerance;
+    this.exportCurveTolerance = this.config.exportCurveTolerance;
     this.clipperScale = this.config.clipperScale;
     this.rotations = this.config.rotations;
     this.threads = this.config.threads;
     this.populationSize = this.config.populationSize;
     this.mutationRate = this.config.mutationRate;
+    this.stopOnPlateau = this.config.stopOnPlateau;
+    this.plateauGenerations = this.config.plateauGenerations;
+    this.plateauMinutes = this.config.plateauMinutes;
     this.placementType = this.config.placementType;
     this.mergeLines = this.config.mergeLines;
     this.timeRatio = this.config.timeRatio;
@@ -134,6 +154,9 @@ export class ConfigService implements ConfigObject {
     this.exportWithSheetsSpace = this.config.exportWithSheetsSpace;
     this.exportWithSheetsSpaceValue = this.config.exportWithSheetsSpaceValue;
     this.showNotifications = this.config.showNotifications;
+    this.useOnlineConverter = this.config.useOnlineConverter;
+    this.odaFileConverterPath = this.config.odaFileConverterPath;
+    this.defaultWorkFolder = this.config.defaultWorkFolder;
   }
 
   /**
@@ -169,10 +192,15 @@ export class ConfigService implements ConfigObject {
    * @param savedConfig - Configuration object to merge
    */
   private mergeConfig(savedConfig: Partial<UIConfig>): void {
-    for (const key in savedConfig) {
-      if (Object.prototype.hasOwnProperty.call(savedConfig, key)) {
+    const plateau = (
+      globalThis as { NestPlateau?: { migrateSavedConfig?: (saved: Partial<UIConfig>) => Partial<UIConfig> } }
+    ).NestPlateau;
+    const migrated =
+      plateau && plateau.migrateSavedConfig ? plateau.migrateSavedConfig(savedConfig) : savedConfig;
+    for (const key in migrated) {
+      if (Object.prototype.hasOwnProperty.call(migrated, key)) {
         const typedKey = key as keyof UIConfig;
-        const value = savedConfig[typedKey];
+        const value = migrated[typedKey];
         if (value !== undefined) {
           this.setConfigValue(typedKey, value);
         }
@@ -199,11 +227,15 @@ export class ConfigService implements ConfigObject {
     this.scale = this.config.scale;
     this.spacing = this.config.spacing;
     this.curveTolerance = this.config.curveTolerance;
+    this.exportCurveTolerance = this.config.exportCurveTolerance;
     this.clipperScale = this.config.clipperScale;
     this.rotations = this.config.rotations;
     this.threads = this.config.threads;
     this.populationSize = this.config.populationSize;
     this.mutationRate = this.config.mutationRate;
+    this.stopOnPlateau = this.config.stopOnPlateau;
+    this.plateauGenerations = this.config.plateauGenerations;
+    this.plateauMinutes = this.config.plateauMinutes;
     this.placementType = this.config.placementType;
     this.mergeLines = this.config.mergeLines;
     this.timeRatio = this.config.timeRatio;
@@ -217,6 +249,10 @@ export class ConfigService implements ConfigObject {
     this.exportWithSheetBoundboarders = this.config.exportWithSheetBoundboarders;
     this.exportWithSheetsSpace = this.config.exportWithSheetsSpace;
     this.exportWithSheetsSpaceValue = this.config.exportWithSheetsSpaceValue;
+    this.showNotifications = this.config.showNotifications;
+    this.useOnlineConverter = this.config.useOnlineConverter;
+    this.odaFileConverterPath = this.config.odaFileConverterPath;
+    this.defaultWorkFolder = this.config.defaultWorkFolder;
     this.access_token = this.config.access_token;
     this.id_token = this.config.id_token;
   }

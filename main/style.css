@@ -419,6 +419,53 @@ ul.dropdown li:hover {
   flex-wrap: wrap;
 }
 
+#distribution {
+  flex: 0 0 auto;
+  padding: 0.45em 0.7em 0.35em;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em 0.8em;
+  align-items: center;
+  font-size: 0.85em;
+  background-color: var(--bg-secondary);
+}
+
+#distribution label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}
+
+#distribution label.is-inactive {
+  opacity: 0.55;
+}
+
+#distribution select,
+#distribution input[type="number"] {
+  background-color: var(--input-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--input-border);
+  border-radius: 2px;
+  padding: 0.1em 0.3em;
+  font-size: 1em;
+}
+
+#distribution input[type="number"] {
+  width: 4.5em;
+}
+
+#distribution .dist-hint {
+  flex: 1 0 100%;
+  margin: 0.15em 0 0.2em;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+#parts table input.percent {
+  width: 3.4em;
+}
+
 #parts {
   background-color: var(--table-bg);
   border-right: 0.2em solid var(--border-color);
@@ -1178,6 +1225,18 @@ body.dark-mode #parts table tbody tr td input[type="number"]:focus {
   margin-bottom: 0em;
 }
 
+#nestinfo .neststatus {
+  font-size: 0.75em;
+  line-height: 1.4;
+  color: #8a9099;
+  margin: 0.4em 0 0.8em 0;
+  max-width: 18em;
+}
+
+#nestinfo .neststatus.active {
+  color: #b5bcc9;
+}
+
 #nestlist {
   width: 100%;
   margin-top: 1em;
@@ -1276,7 +1335,7 @@ body.dark-mode #parts table tbody tr td input[type="number"]:focus {
   position: absolute;
   right: 0;
   bottom: 0;
-  overflow: scroll;
+  overflow: hidden;
   height: calc(100% - 2 * (var(--nav-width) - 0.625em));
 }
 
@@ -1285,7 +1344,7 @@ body.dark-mode #parts table tbody tr td input[type="number"]:focus {
   height: auto;
   margin: 0 5% 0 0;
   display: block;
-  overflow: visible;
+  overflow: hidden;
 }
 
 #nestdisplay svg g.sheet,

@@ -51,6 +51,28 @@ export type DeepNestConfig = {
   timeRatio: number;
   /** Enable polygon simplification */
   simplify: boolean;
+  /**
+   * How far an exported cut path may move from the source, in SVG units
+   * (same storage as curve tolerance). 0 keeps every polyline vertex.
+   * Real arcs and beziers are kept as curves either way.
+   */
+  exportCurveTolerance: number;
+  /**
+   * Stop the genetic search when the best layout stops improving.
+   * Uncheck to run until Stop is clicked.
+   */
+  stopOnPlateau: boolean;
+  /**
+   * Stop after this many generations with no fitness improvement.
+   * 0 disables the generation limit.
+   */
+  plateauGenerations: number;
+  /**
+   * Stop after this many minutes with no fitness improvement, measured
+   * from the end of the first full generation. Decimals are allowed.
+   * 0 disables the time limit.
+   */
+  plateauMinutes: number;
   /** Scale factor for DXF import */
   dxfImportScale: number;
   /** Scale factor for DXF export */
@@ -163,6 +185,11 @@ export type Part = {
   sheet?: boolean;
   /** True if currently selected in the UI */
   selected?: boolean;
+  /**
+   * Share of the mix when distribution is in percentage mode.
+   * Null means the part has not been given a percentage yet.
+   */
+  distributionPercent?: number | null;
 };
 
 /**
@@ -200,6 +227,10 @@ export interface DeepNestInstance {
   nests: NestingResult[];
   /** Whether nesting is currently running */
   working: boolean;
+  /** Generation / stall line shown beside the nest list */
+  nestStatus?: string;
+  /** True when a new placement should be drawn, not just the status line */
+  nestResultDirty?: boolean;
 
   /**
    * Import an SVG file
@@ -232,7 +263,8 @@ export interface DeepNestInstance {
    */
   start(
     progressCallback: ((progress: { index: number; progress: number }) => void) | null,
-    displayCallback: (() => void) | null
+    displayCallback: (() => void) | null,
+    doneCallback?: ((decision: { stop?: boolean; reason?: string | null }) => void) | null
   ): void;
 
   /**

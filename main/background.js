@@ -37,6 +37,81 @@
 import { NfpCache } from '../build/nfpDb.js';
 import { HullPolygon } from '../build/util/HullPolygon.js';
 
+// Hot-path traces (full placement dumps, per-part timing) used to run on every
+// individual. They do not affect geometry. Set DEEPNEST_DEBUG_NEST=1 to bring
+// them back when diagnosing a nest.
+var DEBUG_NEST = false;
+try {
+  DEBUG_NEST = typeof process !== 'undefined' && process.env && process.env.DEEPNEST_DEBUG_NEST === '1';
+} catch (e) {
+  DEBUG_NEST = false;
+}
+function debugLog() {
+  if (DEBUG_NEST && typeof console !== 'undefined' && console.log) {
+    console.log.apply(console, arguments);
+  }
+}
+
+/**
+ * How many NFP web workers one background window should spawn.
+ * GA individuals already run in parallel, one per configured thread, so the
+ * Minkowski workers inside a window must share the machine with those threads
+ * instead of each taking every core.
+ */
+function nfpWorkerCount(config) {
+  var threads = 1;
+  if (config && config.threads) {
+    var parsed = parseInt(config.threads, 10);
+    if (parsed > 0) threads = parsed;
+  }
+  if (threads > 8) threads = 8;
+  var cores = 4;
+  if (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) {
+    cores = navigator.hardwareConcurrency;
+  }
+  var workers = Math.floor(cores / threads);
+  if (workers < 1) workers = 1;
+  return workers;
+}
+
+/**
+ * Pairs of parts that still need an outer NFP. Same key the old linear scan
+ * used (source + rotation); a hash replaces the O(n) membership walk.
+ * Results are identical: a pair is emitted once, and only when the cache misses.
+ */
+function buildNfpPairs(parts, db) {
+  var pairs = [];
+  var pairSeen = {};
+  for (let i = 0; i < parts.length; i++) {
+    var B = parts[i];
+    for (let j = 0; j < i; j++) {
+      var A = parts[j];
+      var pairId = A.source + '|' + B.source + '|' + A.rotation + '|' + B.rotation;
+      if (pairSeen[pairId]) {
+        continue;
+      }
+      pairSeen[pairId] = true;
+      var doc = {
+        A: A.source,
+        B: B.source,
+        Arotation: A.rotation,
+        Brotation: B.rotation
+      };
+      if (!db.has(doc)) {
+        pairs.push({
+          A: A,
+          B: B,
+          Arotation: A.rotation,
+          Brotation: B.rotation,
+          Asource: A.source,
+          Bsource: B.source
+        });
+      }
+    }
+  }
+  return pairs;
+}
+
 window.onload = function () {
   const { ipcRenderer } = require('electron');
   window.ipcRenderer = ipcRenderer;
@@ -82,38 +157,7 @@ window.onload = function () {
     data.sheets = _sheets;
 
     // preprocess
-    var pairs = [];
-    var inpairs = function (key, p) {
-      for (let i = 0; i < p.length; i++) {
-        if (p[i].Asource == key.Asource && p[i].Bsource == key.Bsource && p[i].Arotation == key.Arotation && p[i].Brotation == key.Brotation) {
-          return true;
-        }
-      }
-      return false;
-    }
-    for (let i = 0; i < parts.length; i++) {
-      var B = parts[i];
-      for (let j = 0; j < i; j++) {
-        var A = parts[j];
-        var key = {
-          A: A,
-          B: B,
-          Arotation: A.rotation,
-          Brotation: B.rotation,
-          Asource: A.source,
-          Bsource: B.source
-        };
-        var doc = {
-          A: A.source,
-          B: B.source,
-          Arotation: A.rotation,
-          Brotation: B.rotation
-        }
-        if (!inpairs(key, pairs) && !db.has(doc)) {
-          pairs.push(key);
-        }
-      }
-    }
+    var pairs = buildNfpPairs(parts, window.db);
 
     // console.log('pairs: ', pairs.length);
 
@@ -235,12 +279,6 @@ window.onload = function () {
 
     // run the placement synchronously
     function sync() {
-      //console.log('starting synchronous calculations', Object.keys(window.nfpCache).length);
-      // console.log('in sync');
-      var c = window.db.getStats();
-      // console.log('nfp cached:', c);
-      // console.log()
-      ipcRenderer.send('test', [data.sheets, parts, data.config, index]);
       var placement = placeParts(data.sheets, parts, data.config, index);
 
       placement.index = data.index;
@@ -253,7 +291,8 @@ window.onload = function () {
     if (pairs.length > 0) {
       var p = new Parallel(pairs, {
         evalPath: '../build/util/eval.js',
-        synchronous: false
+        synchronous: false,
+        maxWorkers: nfpWorkerCount(data.config)
       });
 
       var spawncount = 0;
@@ -269,13 +308,16 @@ window.onload = function () {
       p.require('../../main/util/geometryutil.js');
 
       p.map(process).then(function (processed) {
-        function getPart(source) {
-          for (let k = 0; k < parts.length; k++) {
-            if (parts[k].source == source) {
-              return parts[k];
-            }
+        // First part with this source, matching the previous linear scan.
+        var partBySource = {};
+        for (let k = 0; k < parts.length; k++) {
+          if (partBySource[parts[k].source] == null) {
+            partBySource[parts[k].source] = parts[k];
           }
-          return null;
+        }
+        function getPart(source) {
+          var found = partBySource[source];
+          return found == null ? null : found;
         }
         // store processed data in cache
         for (let i = 0; i < processed.length; i++) {
@@ -330,6 +372,12 @@ window.onload = function () {
       sync();
     }
   });
+
+  ipcRenderer.on('distribution-fit', function (event, data) {
+    runDistributionFit(ipcRenderer, data);
+  });
+
+  ipcRenderer.send('background-ready');
 };
 
 /**
@@ -1847,7 +1895,7 @@ function placeParts(sheets, parts, config, nestindex) {
 
   // there were parts that couldn't be placed
   // scale this value high - we really want to get all the parts in, even at the cost of opening new sheets
-  console.log('UNPLACED PARTS', parts.length, 'of', totalnum);
+  debugLog('UNPLACED PARTS', parts.length, 'of', totalnum);
   for (let i = 0; i < parts.length; i++) {
     // console.log(`Fitness before unplaced penalty: ${fitness}`);
     // Massive penalty multiplier of 100,000,000 ensures unplaced parts severely degrade fitness
@@ -1862,12 +1910,125 @@ function placeParts(sheets, parts, config, nestindex) {
   // send finish progress signal
   ipcRenderer.send('background-progress', { index: nestindex, progress: -1 });
 
-  console.log('WATCH', allplacements);
+  debugLog('WATCH', allplacements);
 
   const utilisation = totalusablesheetarea > 0 ? (totalplacedarea / totalusablesheetarea) * 100 : 0;
-  console.log(`Utilisation of the sheet(s): ${utilisation.toFixed(2)}%`);
+  debugLog('Utilisation of the sheet(s): ' + utilisation.toFixed(2) + '%');
 
   return { placements: allplacements, fitness: fitness, area: totalplacedarea, totalarea: totalusablesheetarea, mergedLength: totalMerged, utilisation: utilisation };
+}
+
+function revivePolygon(node) {
+  var poly = [];
+  var points = (node && node.points) || [];
+  for (var i = 0; i < points.length; i++) {
+    poly.push({ x: points[i].x, y: points[i].y });
+  }
+  if (node && node.children && node.children.length) {
+    poly.children = [];
+    for (var c = 0; c < node.children.length; c++) {
+      poly.children.push(revivePolygon(node.children[c]));
+    }
+  }
+  return poly;
+}
+
+function clonePolygon(poly) {
+  var copy = [];
+  for (var i = 0; i < poly.length; i++) {
+    copy.push({ x: poly[i].x, y: poly[i].y });
+  }
+  if (poly.children && poly.children.length) {
+    copy.children = [];
+    for (var c = 0; c < poly.children.length; c++) {
+      copy.children.push(clonePolygon(poly.children[c]));
+    }
+  }
+  return copy;
+}
+
+// Binary-search how many copies fit. Uses the same placeParts path as a nest.
+function runDistributionFit(ipcRenderer, data) {
+  var NestDistribution = require('./util/distribution.js');
+  var originalSend = ipcRenderer.send;
+  ipcRenderer.send = function (channel) {
+    if (channel === 'background-progress') {
+      return;
+    }
+    return originalSend.apply(ipcRenderer, arguments);
+  };
+  try {
+    var result = fitDistribution(NestDistribution, data || {});
+    originalSend.call(ipcRenderer, 'distribution-fit-result', {
+      id: data && data.id,
+      ok: true,
+      result: result
+    });
+  } catch (err) {
+    originalSend.call(ipcRenderer, 'distribution-fit-result', {
+      id: data && data.id,
+      ok: false,
+      error: err && err.message ? err.message : String(err)
+    });
+  } finally {
+    ipcRenderer.send = originalSend;
+  }
+}
+
+function fitDistribution(NestDistribution, data) {
+  var items = data.items || [];
+  var templates = items.map(function (item) {
+    return revivePolygon(item.polygon);
+  });
+  var config = data.config || {};
+
+  function makeSheets() {
+    var sheets = [];
+    items.forEach(function (item, index) {
+      if (!item.sheet) return;
+      var q = Math.floor(Number(item.quantity));
+      if (!isFinite(q)) q = 1;
+      if (q < 0) q = 0;
+      for (var n = 0; n < q; n++) {
+        var poly = clonePolygon(templates[index]);
+        poly.source = index;
+        poly.id = 'sheet-' + index + '-' + n;
+        poly.rotation = 0;
+        sheets.push(poly);
+      }
+    });
+    return sheets;
+  }
+
+  function places(sequence, rotationByIndex) {
+    if (!sequence || sequence.length === 0) return false;
+    var parts = sequence.map(function (index, n) {
+      var poly = clonePolygon(templates[index]);
+      poly.source = index;
+      poly.id = n;
+      poly.rotation = rotationByIndex && rotationByIndex[index] ? rotationByIndex[index] : 0;
+      poly.filename = items[index] && items[index].filename;
+      return poly;
+    });
+    var result = null;
+    try {
+      result = placeParts(makeSheets(), parts, config, -1);
+    } catch (err) {
+      return false;
+    }
+    if (!result || !result.placements) return false;
+    var placed = 0;
+    for (var i = 0; i < result.placements.length; i++) {
+      placed += result.placements[i].sheetplacements.length;
+    }
+    return placed === parts.length;
+  }
+
+  return NestDistribution.runMaxOut({
+    even: !!data.even,
+    rotations: data.rotations,
+    items: items
+  }, places);
 }
 
 // clipperjs uses alerts for warnings

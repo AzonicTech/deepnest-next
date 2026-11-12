@@ -13,6 +13,7 @@ import type {
 } from "../types/index.js";
 import { DEFAULT_CONVERSION_SERVER } from "../types/index.js";
 import { message } from "../utils/ui-helpers.js";
+import { convertDwg, dxfToSvg, readableConversionError, workFolders } from "../utils/local-modules.js";
 
 /**
  * File filter options for the open dialog
@@ -28,6 +29,7 @@ interface FileFilter {
 interface OpenDialogOptions {
   filters: FileFilter[];
   properties: ("openFile" | "multiSelections")[];
+  defaultPath?: string;
 }
 
 /**
@@ -189,6 +191,9 @@ export class ImportService {
   /** Callback for resizing parts view after import */
   private resizeCallback: (() => void) | null = null;
 
+  /** Called after parts change so a distribution mix can refresh */
+  private onPartsChanged: (() => void) | null = null;
+
   /** Flag to track if import button is busy */
   private isImporting = false;
 
@@ -210,6 +215,7 @@ export class ImportService {
     attachSortCallback?: () => void;
     applyZoomCallback?: () => void;
     resizeCallback?: () => void;
+    onPartsChanged?: () => void;
   }) {
     if (options) {
       this.dialog = options.dialog || null;
@@ -225,6 +231,7 @@ export class ImportService {
       this.attachSortCallback = options.attachSortCallback || null;
       this.applyZoomCallback = options.applyZoomCallback || null;
       this.resizeCallback = options.resizeCallback || null;
+      this.onPartsChanged = options.onPartsChanged || null;
     }
   }
 
@@ -362,6 +369,10 @@ export class ImportService {
     return extension.toLowerCase() === ".dxf";
   }
 
+  private isDwg(extension: string): boolean {
+    return extension.toLowerCase() === ".dwg";
+  }
+
   /**
    * Load files from the nest directory on startup
    * @returns Promise that resolves when all files are loaded
@@ -407,9 +418,13 @@ export class ImportService {
     this.isImporting = true;
 
     try {
+      const start = workFolders().dialogFolder(
+        String(this.config?.getSync("defaultWorkFolder") || "")
+      );
       const result = await this.dialog.showOpenDialog({
         filters: FILE_FILTERS,
         properties: ["openFile", "multiSelections"],
+        defaultPath: start || undefined,
       });
 
       if (result.canceled) {
@@ -417,6 +432,7 @@ export class ImportService {
       }
 
       for (const filePath of result.filePaths) {
+        workFolders().noteImport(filePath);
         await this.processFile(filePath);
       }
     } finally {
@@ -473,16 +489,40 @@ export class ImportService {
   }
 
   /**
-   * Convert a non-SVG file to SVG using the conversion server
-   * @param filePath - Full path to the file
-   * @param filename - Base filename
-   * @param ext - File extension
+   * DXF is converted on this computer. The online converter is used only when
+   * that setting is on, and only if local conversion fails or the file is not DXF.
    */
   private async convertAndImport(
     filePath: string,
     filename: string,
     ext: string
   ): Promise<void> {
+    if (this.isDxf(ext)) {
+      const local = this.importDxfLocally(filePath, filename);
+      if (local === "ok") {
+        return;
+      }
+      if (!this.onlineConverterEnabled()) {
+        message(local, true);
+        return;
+      }
+    } else if (this.isDwg(ext)) {
+      const local = await this.importDwgLocally(filePath, filename);
+      if (local === "ok") {
+        return;
+      }
+      if (!this.onlineConverterEnabled()) {
+        message(local, true);
+        return;
+      }
+    } else if (!this.onlineConverterEnabled()) {
+      message(
+        "This file needs the online converter, and that option is off. DXF and DWG files import on this computer with no internet.",
+        true
+      );
+      return;
+    }
+
     if (!this.fs || !this.httpClient || !this.FormData) {
       message("Required modules not available for conversion", true);
       return;
@@ -549,11 +589,56 @@ export class ImportService {
           true
         );
       } else {
-        message(
-          `Could not contact file conversion server: ${JSON.stringify(err)}<br>Please use this code to open an issue on github.com/deepnest-next/deepnest`,
-          true
-        );
+        message(readableConversionError(err), true);
       }
+    }
+  }
+
+  private drawingUnits(): "inch" | "mm" {
+    return this.config?.getSync("units") === "mm" ? "mm" : "inch";
+  }
+
+  private onlineConverterEnabled(): boolean {
+    return this.config?.getSync("useOnlineConverter") === true;
+  }
+
+  /**
+   * @returns "ok" when the drawing was imported, otherwise a short reason
+   */
+  private async importDwgLocally(filePath: string, filename: string): Promise<"ok" | string> {
+    try {
+      const odaPath = String(this.config?.getSync("odaFileConverterPath") || "");
+      const dir = this.path ? this.path.dirname(filePath) : "";
+      const copyTo = dir ? workFolders().convertedDxfPath(dir, filename) : "";
+      const converted = await convertDwg(filePath, { odaPath, copyTo });
+      if (!converted.ok || !converted.dxf) {
+        return converted.message || "DWG needs the free ODA File Converter. Install it, then set its path in Settings.";
+      }
+      if (converted.copyError) {
+        message("Imported the DWG, but could not save the DXF copy: " + converted.copyError, true);
+      }
+      const svg = dxfToSvg(converted.dxf, { units: this.drawingUnits() });
+      const scalingFactor = Number(this.config?.getSync("dxfImportScale")) || 1;
+      this.processSvgData(svg, filename, null, scalingFactor, true);
+      return "ok";
+    } catch (err) {
+      const error = err as { message?: string };
+      return error.message || "Could not read this DWG";
+    }
+  }
+
+  private importDxfLocally(filePath: string, filename: string): "ok" | string {
+    if (!this.fs) {
+      return "File system is not available";
+    }
+    try {
+      const svg = dxfToSvg(this.fs.readFileSync(filePath), { units: this.drawingUnits() });
+      const scalingFactor = Number(this.config?.getSync("dxfImportScale")) || 1;
+      this.processSvgData(svg, filename, null, scalingFactor, true);
+      return "ok";
+    } catch (err) {
+      const error = err as { message?: string };
+      return error.message || "Could not read this DXF";
     }
   }
 
@@ -651,6 +736,10 @@ export class ImportService {
 
     if (this.resizeCallback) {
       this.resizeCallback();
+    }
+
+    if (this.onPartsChanged) {
+      this.onPartsChanged();
     }
   }
 

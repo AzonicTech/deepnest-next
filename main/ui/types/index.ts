@@ -39,6 +39,21 @@ export interface UIConfig extends DeepNestConfig {
   exportWithSheetsSpaceValue: number;
   /** Show product/update notifications fetched from deepnest.net (default: true) */
   showNotifications: boolean;
+  /**
+   * Try the online converter only when local DXF conversion cannot read a file,
+   * or for DWG/PS/EPS. Off by default so the app works with no internet.
+   */
+  useOnlineConverter: boolean;
+  /**
+   * Path to the ODA File Converter executable. Empty means look in the
+   * usual Linux and Windows install locations, then LibreDWG's dwg2dxf.
+   */
+  odaFileConverterPath: string;
+  /**
+   * Folder file dialogs open in before a job is imported.
+   * Empty means the home directory. Not a personal path.
+   */
+  defaultWorkFolder: string;
 }
 
 /**
@@ -131,6 +146,30 @@ export interface DeepNestInstance {
   nests: SelectableNestingResult[];
   /** Whether nesting is currently running */
   working: boolean;
+  /** Generation / stall line shown beside the nest list */
+  nestStatus?: string;
+  /** True when a new placement should be drawn, not just the status line */
+  nestResultDirty?: boolean;
+  /** Redraw even when the restored nest is already the selected one */
+  forceNestDisplay?: boolean;
+  /** Part-count nests pack with gravity for that run */
+  compactPlacement: boolean;
+  /** Known-good order and rotations for the current mix */
+  distributionSeed: { sequence: number[]; rotationBySource: Record<string, number> } | null;
+  /** Drop the current population when the mix changes */
+  noteDistribution(signature: string | null): void;
+  /** Max-out adds another set after each full placement until one does not fit */
+  armMaxOut?(spec: {
+    even: boolean;
+    startLevel: number;
+    rotations: number;
+    items: unknown[];
+  }): void;
+  clearMaxOut?(): void;
+  /** Offset part and sheet polygons, for a fit measurement */
+  nestShapes(): Array<Record<string, unknown>>;
+  /** Placement settings the background worker should use */
+  placementConfig(): Record<string, unknown>;
 
   /**
    * Import an SVG file
@@ -163,7 +202,8 @@ export interface DeepNestInstance {
    */
   start(
     progressCallback: ((progress: NestingProgress) => void) | null,
-    displayCallback: (() => void) | null
+    displayCallback: (() => void) | null,
+    doneCallback?: ((decision: { stop?: boolean; reason?: string | null }) => void) | null
   ): void;
 
   /**
@@ -194,6 +234,7 @@ export interface PartsViewData {
  */
 export interface NestViewData {
   nests: SelectableNestingResult[];
+  nestStatus: string;
   getSelected(): SelectableNestingResult[];
   getNestedPartSources(n: SelectableNestingResult): number[];
   getColorBySource(id: number): string;

@@ -470,6 +470,31 @@ function initializeConfigForm(): void {
     };
   });
 
+  const browseWorkFolder = getElement<HTMLButtonElement>("#browseWorkFolder");
+  if (browseWorkFolder) {
+    browseWorkFolder.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const dialog = electronRemote.dialog as {
+        showOpenDialog: (options: {
+          title: string;
+          defaultPath?: string;
+          properties: string[];
+        }) => Promise<{ canceled: boolean; filePaths: string[] }>;
+      };
+      const current = String(configService.getSync("defaultWorkFolder") || "");
+      const result = await dialog.showOpenDialog({
+        title: "Default work folder",
+        properties: ["openDirectory"],
+        defaultPath: current || undefined,
+      });
+      if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+        return;
+      }
+      configService.setSync("defaultWorkFolder", result.filePaths[0]);
+      updateForm(configService.getSync() as unknown as ConfigResult);
+    });
+  }
+
   // Reset to defaults button
   const setDefaultBtn = getElement<HTMLElement>("#setdefault");
   if (setDefaultBtn) {
@@ -514,7 +539,9 @@ function initializeBackgroundProgress(): void {
   ipcRenderer.on(IPC_CHANNELS.BACKGROUND_PROGRESS, (_event: unknown, ...args: unknown[]) => {
     const p = args[0] as NestingProgress;
     const bar = getElement<HTMLElement>("#progressbar");
-    if (bar) {
+    // A finished worker reports progress < 0. Ignore that so one of several
+    // parallel individuals cannot blank the bar while the others are still going.
+    if (bar && p && typeof p.progress === "number" && isFinite(p.progress) && p.progress >= 0) {
       const progress = p.progress;
       const style = `width: ${parseInt(String(progress * 100))}%${progress < 0.01 ? "; transition: none" : ""}`;
       bar.setAttribute("style", style);
@@ -653,6 +680,7 @@ function initializeComponents(): void {
     attachSortCallback: () => partsViewService.attachSort(),
     applyZoomCallback: () => partsViewService.applyZoom(),
     resizeCallback: resize,
+    onPartsChanged: () => partsViewService.update(),
   });
 
   // Initialize export service
@@ -683,6 +711,7 @@ function initializeComponents(): void {
     // Note: nestRactive set separately to avoid type conflicts
     displayNestFn: nestViewService.getDisplayNestCallback(),
     saveJsonFn: () => exportService.exportToJson(),
+    prepareDistribution: () => partsViewService.prepareForNest(),
   });
 
   // Set nestRactive separately to avoid type conflicts
